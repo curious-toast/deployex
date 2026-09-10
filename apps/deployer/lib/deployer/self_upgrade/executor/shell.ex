@@ -40,7 +40,7 @@ defmodule Deployer.SelfUpgrade.Executor.Shell do
   end
 
   defp opts, do: Application.get_env(:deployer, Deployer.SelfUpgrade, [])
-  defp script, do: opts()[:script] || "/opt/deployex_installer/deployex.sh"
+  defp script, do: opts()[:script] || "/home/root/deployex.sh"
   defp config_file, do: opts()[:config_file] || "/home/root/deployex.yaml"
 
   defp dist_args do
