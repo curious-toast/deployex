@@ -73,7 +73,7 @@ check_app_access_requirements() {
     local missing_vars=()
     
     case $operation in
-        hot-upgrade)
+        hot-upgrade|hot-update)
             if [[ -z "${RELEASE_COOKIE}" ]]; then
                 missing_vars+=("RELEASE_COOKIE")
             fi
