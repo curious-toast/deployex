@@ -1,0 +1,8 @@
+defmodule Deployer.SelfUpgrade.Executor.Adapter do
+  @moduledoc """
+  Behaviour for running a DeployEx self-upgrade to a target version.
+  """
+
+  @callback hot_update(version :: String.t()) :: :ok | {:error, any()}
+  @callback restart_update(version :: String.t()) :: :ok | {:error, any()}
+end

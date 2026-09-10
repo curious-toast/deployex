@@ -1,0 +1,22 @@
+defmodule Deployer.SelfUpgrade.ExecutorTest do
+  use ExUnit.Case, async: true
+  import Mox
+
+  alias Deployer.SelfUpgrade.Executor
+
+  setup :verify_on_exit!
+
+  test "hot_update/1 delegates to the configured adapter" do
+    Deployer.SelfUpgrade.ExecutorMock
+    |> expect(:hot_update, fn "1.2.3" -> :ok end)
+
+    assert :ok = Executor.hot_update("1.2.3")
+  end
+
+  test "restart_update/1 delegates to the configured adapter" do
+    Deployer.SelfUpgrade.ExecutorMock
+    |> expect(:restart_update, fn "1.2.3" -> :ok end)
+
+    assert :ok = Executor.restart_update("1.2.3")
+  end
+end
