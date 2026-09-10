@@ -23,6 +23,10 @@ jobs:
       ARTIFACT_NAME: deployex-ubuntu-24.04-otp-${{ matrix.otp }}.tar.gz
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Full history + tags so we can build the previous release and let
+          # Jellyfish generate the hot-upgrade appup into this release.
+          fetch-depth: 0
 
       - name: Install libcap-dev [recommended by erlexec]
         run: sudo apt-get install libcap-dev -y
@@ -36,6 +40,27 @@ jobs:
           version-file: .tool-versions
           version-type: strict
 
+      # Build the previous release first so `mix release` for this tag emits a
+      # relup/appup from it (enabling a hot upgrade FROM the previous version).
+      # Jellyfish reads the previous release left in _build/prod. Skipped for the
+      # first release (no previous tag).
+      - name: Build previous release (for hot-upgrade appup)
+        run: |
+          TAG="${{ github.ref_name }}"
+          PREV=$(git tag --sort=version:refname | awk -v cur="$TAG" '$0==cur{print prev} {prev=$0}')
+          if [ -n "$PREV" ]; then
+            echo "Previous release: $PREV — building it so $PREV -> $TAG carries an appup"
+            git checkout --quiet "$PREV"
+            cp devops/releases/otp-${{ matrix.otp }}/.tool-versions .
+            mix do deps.get + compile
+            mix assets.deploy
+            mix release
+            git checkout --quiet "$TAG"
+            cp devops/releases/otp-${{ matrix.otp }}/.tool-versions .
+          else
+            echo "No previous tag; building $TAG as a base release (no appup)"
+          fi
+
       - name: Install Elixir dependencies
         run: mix do deps.get + compile --warnings-as-errors
 
@@ -46,7 +71,9 @@ jobs:
         run: mix release
 
       - name: Rename Artifact
-        run: mv _build/prod/*.tar.gz ${{ env.ARTIFACT_NAME }}
+        # After the two-phase build _build/prod may also hold the previous
+        # tarball; take the most recently built one (this tag's release).
+        run: mv "$(ls -t _build/prod/deployex-*.tar.gz | head -1)" ${{ env.ARTIFACT_NAME }}
 
       - name: Calculate checksum
         run: sha256sum ${{ env.ARTIFACT_NAME }} > ${{ env.ARTIFACT_NAME }}.sha256
