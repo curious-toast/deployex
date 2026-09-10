@@ -2,7 +2,7 @@ defmodule Deployer.SelfUpgrade.Executor.Shell do
   @moduledoc """
   Executes a self-upgrade by shelling out to the deployex.sh installer.
 
-  `hot_update/1` runs `deployex.sh --hot-update`; `restart_update/1` runs
+  `hot_upgrade/1` runs `deployex.sh --hot-upgrade`; `restart_update/1` runs
   `deployex.sh --update`. Both pass `--set-version` so the target version comes
   from the reconciler, not the on-disk config.
   """
@@ -12,8 +12,8 @@ defmodule Deployer.SelfUpgrade.Executor.Shell do
   require Logger
 
   @impl true
-  @spec hot_update(String.t()) :: :ok | {:error, any()}
-  def hot_update(version), do: run("--hot-update", version)
+  @spec hot_upgrade(String.t()) :: :ok | {:error, any()}
+  def hot_upgrade(version), do: run("--hot-upgrade", version)
 
   @impl true
   @spec restart_update(String.t()) :: :ok | {:error, any()}

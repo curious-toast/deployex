@@ -14,8 +14,8 @@ usage() {
     echo "  $0 --install [config_file] [--dist <base_url>]"
     echo "  $0 --update [config_file] [--dist <base_url>]"
     echo "  $0 --uninstall [config_file]"
-    echo "  $0 --hot-upgrade <release_path> [config_file]"
-    echo "  $0 --hot-update [config_file] [--set-version <version>] [--dist <base_url>]"
+    echo "  $0 --hot-upgrade [config_file] [--set-version <version>] [--dist <base_url>]"
+    echo "  $0 --hot-upgrade --release-path <path> [config_file]"
     echo "  $0 --help"
     echo
     echo "Options:"
@@ -25,13 +25,14 @@ usage() {
     echo "                            (default: ${DEFAULT_CONFIG_FILE})"
     echo "  --uninstall [config_file] Completely remove deployex from the system"
     echo "                            (default: ${DEFAULT_CONFIG_FILE})"
-    echo "  --hot-upgrade <release_path>    Perform hot upgrade with downloaded release tarball"
-    echo "                                  [config_file] (default: ${DEFAULT_CONFIG_FILE})"
-    echo "                                  Requires: RELEASE_COOKIE environment variable"
-    echo "  --hot-update [config_file]      Download the release and perform a hot upgrade"
-    echo "                                  (default: ${DEFAULT_CONFIG_FILE})"
+    echo "  --hot-upgrade [config_file]     Hot upgrade deployex. Downloads the release"
+    echo "                                  (version from the config or --set-version) and"
+    echo "                                  hot-upgrades. Requires RELEASE_COOKIE."
+    echo "                                  (default config: ${DEFAULT_CONFIG_FILE})"
+    echo "  --release-path <path>     Hot upgrade from a local release tarball instead of"
+    echo "                            downloading (use with --hot-upgrade)"
     echo "  --set-version <version>   Override the version read from the config file"
-    echo "                            (used with --hot-update)"
+    echo "                            (used with --hot-upgrade download mode)"
     echo "  --dist <base_url>         Base URL for downloading releases"
     echo "                            (default: ${DEFAULT_DIST_URL})"
     echo "  --help                    Print help"
@@ -55,14 +56,11 @@ usage() {
     echo "  Uninstall deployex completely:"
     echo "    $0 --uninstall"
     echo
-    echo "  Hot upgrade with local release file:"
-    echo "    RELEASE_COOKIE=my_secret_cookie $0 --hot-upgrade /tmp/deployex-0.9.1.tar.gz"
+    echo "  Hot upgrade by downloading a version:"
+    echo "    RELEASE_COOKIE=my_secret_cookie $0 --hot-upgrade --set-version 0.9.15"
     echo
-    echo "  Hot upgrade with custom config:"
-    echo "    $0 --hot-upgrade /tmp/deployex-0.9.1.tar.gz my-config.yaml"
-    echo
-    echo "  Hot update (download release and hot upgrade) with a version override:"
-    echo "    RELEASE_COOKIE=my_secret_cookie $0 --hot-update --set-version 0.9.15"
+    echo "  Hot upgrade from a local release file:"
+    echo "    RELEASE_COOKIE=my_secret_cookie $0 --hot-upgrade --release-path /tmp/deployex-0.9.1.tar.gz"
     echo
     exit 1
 }
@@ -73,7 +71,7 @@ check_app_access_requirements() {
     local missing_vars=()
     
     case $operation in
-        hot-upgrade|hot-update)
+        hot-upgrade)
             if [[ -z "${RELEASE_COOKIE}" ]]; then
                 missing_vars+=("RELEASE_COOKIE")
             fi
@@ -316,7 +314,7 @@ hot_upgrade_deployex() {
     fi
 }
 
-hot_update_deployex() {
+download_and_hot_upgrade_deployex() {
   local OS_TARGET=$1 OTP_VERSION=$2 BASE_RELEASE=$3
   local RELEASE_PATH VERSIONED_PATH
   RELEASE_PATH=$(download_and_verify_release "$OS_TARGET" "$OTP_VERSION" "$BASE_RELEASE")
@@ -375,15 +373,8 @@ while [[ $# -gt 0 ]]; do
         --hot-upgrade)
             operation=hot-upgrade
             shift
-            # Release path is required for hot-upgrade
-            if [[ $# -gt 0 && ! "$1" =~ ^-- ]]; then
-                release_path="$1"
-                shift
-            else
-                echo "Error: --hot-upgrade requires a release path"
-                usage
-            fi
-            # Check for optional config file
+            # Optional config-file positional (default below). Local-file mode is
+            # selected with --release-path; otherwise the release is downloaded.
             if [[ $# -gt 0 && ! "$1" =~ ^-- ]]; then
                 config_file="$1"
                 shift
@@ -391,16 +382,13 @@ while [[ $# -gt 0 ]]; do
                 config_file=${DEFAULT_CONFIG_FILE}
             fi
             ;;
-        --hot-update)
-            operation=hot-update
-            shift
-            # Check if next argument exists and is not another flag
-            if [[ $# -gt 0 && ! "$1" =~ ^-- ]]; then
-                config_file="$1"
-                shift
-            else
-                config_file=${DEFAULT_CONFIG_FILE}
+        --release-path)
+            if [[ -z "$2" || "$2" =~ ^-- ]]; then
+                echo "Error: --release-path requires a path argument"
+                usage
             fi
+            release_path="$2"
+            shift 2
             ;;
         --set-version)
             if [[ -z "$2" || "$2" =~ ^-- ]]; then
@@ -512,11 +500,6 @@ elif [ $operation == update ]; then
         usage
     fi
     update_deployex $os_target $otp_version $base_release
-elif [ $operation == hot-update ]; then
-    if [[ -z $version || -z $os_target || -z $otp_version ]]; then
-        echo "Error: Missing required parameters"; usage
-    fi
-    hot_update_deployex $os_target $otp_version $base_release
 elif [ $operation == uninstall ]; then
     remove_deployex
     # Remove user and group (only if they exist)
@@ -530,12 +513,16 @@ elif [ $operation == uninstall ]; then
 
     echo "# Deployex uninstalled with success        #"
 elif [ $operation == hot-upgrade ]; then
-    # Version to download - need all parameters
-    if [[ -z $release_path ]]; then
-        echo "Error: Release_path cannot be empty"
-        usage
+    if [[ -n $release_path ]]; then
+        # Local-file mode: hot upgrade the provided tarball, no download.
+        hot_upgrade_deployex $release_path
+    else
+        # Download mode (default): fetch the release, then hot upgrade.
+        if [[ -z $version || -z $os_target || -z $otp_version ]]; then
+            echo "Error: Missing required parameters"; usage
+        fi
+        download_and_hot_upgrade_deployex $os_target $otp_version $base_release
     fi
-    hot_upgrade_deployex $release_path
 else
     usage
 fi

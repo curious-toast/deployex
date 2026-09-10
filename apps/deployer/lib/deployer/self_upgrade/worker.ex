@@ -78,7 +78,7 @@ defmodule Deployer.SelfUpgrade.Worker do
   defp upgrade(version, state) do
     emit(:started, %{version: version})
 
-    case Executor.hot_update(version) do
+    case Executor.hot_upgrade(version) do
       :ok ->
         emit(:hot_ok, %{version: version})
         {:ok, %{state | last_failed: nil}}

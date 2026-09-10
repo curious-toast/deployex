@@ -349,7 +349,7 @@ Then choose one of the following methods:
 
 Use the installer script with a local release file:
 ```bash
-./deployex.sh --hot-upgrade /tmp/deployex-0.9.1.tar.gz
+./deployex.sh --hot-upgrade --release-path /tmp/deployex-0.9.1.tar.gz
 
 # Executing hot upgrade via RPC            #
 # Release file: /tmp/hotupgrade/download/deployex-0.9.1.tar.gz

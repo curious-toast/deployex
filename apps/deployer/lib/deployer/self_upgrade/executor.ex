@@ -6,8 +6,8 @@ defmodule Deployer.SelfUpgrade.Executor do
   @behaviour Deployer.SelfUpgrade.Executor.Adapter
 
   @impl true
-  @spec hot_update(String.t()) :: :ok | {:error, any()}
-  def hot_update(version), do: default().hot_update(version)
+  @spec hot_upgrade(String.t()) :: :ok | {:error, any()}
+  def hot_upgrade(version), do: default().hot_upgrade(version)
 
   @impl true
   @spec restart_update(String.t()) :: :ok | {:error, any()}
