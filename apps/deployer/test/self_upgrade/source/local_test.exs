@@ -13,4 +13,10 @@ defmodule Deployer.SelfUpgrade.Source.LocalTest do
     Application.delete_env(:deployer, Local)
     assert :none = Local.desired_version()
   end
+
+  test "returns :none when the configured version is empty" do
+    Application.put_env(:deployer, Local, version: "")
+    on_exit(fn -> Application.delete_env(:deployer, Local) end)
+    assert :none = Local.desired_version()
+  end
 end
