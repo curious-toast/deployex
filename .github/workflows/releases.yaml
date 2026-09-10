@@ -40,16 +40,16 @@ jobs:
           version-file: .tool-versions
           version-type: strict
 
-      # Build the previous release first so `mix release` for this tag emits a
-      # relup/appup from it (enabling a hot upgrade FROM the previous version).
-      # Jellyfish reads the previous release left in _build/prod. Skipped for the
-      # first release (no previous tag).
-      - name: Build previous release (for hot-upgrade appup)
+      # Mirror hot_upgrade.yaml: build the previous release, then build this tag
+      # with --force in the same sequence, so Jellyfish sees the previous app
+      # versions in the release lib and emits the relup/appup into this release.
+      # First release (no previous tag) is a plain base build.
+      - name: Compile and generate the release (with hot-upgrade appup)
         run: |
           TAG="${{ github.ref_name }}"
           PREV=$(git tag --sort=version:refname | awk -v cur="$TAG" '$0==cur{print prev} {prev=$0}')
           if [ -n "$PREV" ]; then
-            echo "Previous release: $PREV — building it so $PREV -> $TAG carries an appup"
+            echo "Previous release: $PREV — building $PREV then $TAG so $PREV -> $TAG carries an appup"
             git checkout --quiet "$PREV"
             cp devops/releases/otp-${{ matrix.otp }}/.tool-versions .
             mix do deps.get + compile
@@ -57,18 +57,15 @@ jobs:
             mix release
             git checkout --quiet "$TAG"
             cp devops/releases/otp-${{ matrix.otp }}/.tool-versions .
+            mix do deps.get + compile --force --warnings-as-errors
+            mix assets.deploy
+            mix release
           else
             echo "No previous tag; building $TAG as a base release (no appup)"
+            mix do deps.get + compile --warnings-as-errors
+            mix assets.deploy
+            mix release
           fi
-
-      - name: Install Elixir dependencies
-        run: mix do deps.get + compile --warnings-as-errors
-
-      - name: Assets Deploy
-        run: mix assets.deploy
-
-      - name: Compile and Generate a Release
-        run: mix release
 
       - name: Rename Artifact
         # After the two-phase build _build/prod may also hold the previous
