@@ -479,8 +479,11 @@ if [[ -n $set_version ]]; then
     version=$set_version
 fi
 
-if [ $dist_url != $DEFAULT_DIST_URL ]; then
-    base_release=${dist_url}
+if [ "$dist_url" != "$DEFAULT_DIST_URL" ]; then
+    # A custom --dist URL may embed a {version} placeholder for per-version paths
+    # (e.g. a GitHub releases base: .../releases/download/{version}). Without the
+    # placeholder the URL is used as-is, preserving the flat-bucket behaviour.
+    base_release=$(echo "$dist_url" | sed "s|{version}|${version}|g")
 else
     base_release=${dist_url}/${version}
 fi
