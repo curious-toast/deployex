@@ -418,6 +418,12 @@ self-upgrade result. The AWS instance must enable metadata tags (`metadata_optio
 the guide modules already set. The hot upgrade runs `deployex rpc` against the running node; DeployEx passes the live distribution
 cookie to that call automatically, so you do not need to set `RELEASE_COOKIE` for the worker.
 
+Under `:hot_only`, a failed version is latched: the worker does not retry it until the running version changes. This prevents a bad
+version from looping. After you fix the cause, retry the same version in one of two ways:
+
+- Restart DeployEx. The worker clears its state and reconciles again on the next tick.
+- Run the reconcile directly: `bin/deployex rpc "Deployer.SelfUpgrade.Worker.reconcile()"`.
+
 ### Choosing the right release file
 
 Each release publishes one artifact per OTP line, `deployex-ubuntu-24.04-otp-28.tar.gz` and `deployex-ubuntu-24.04-otp-29.tar.gz`.
