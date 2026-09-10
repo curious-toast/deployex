@@ -415,7 +415,8 @@ Policy:
 
 To roll out a new version: set `deployex_version` in Terraform, run `terraform apply`, then watch the DeployEx logs for the
 self-upgrade result. The AWS instance must enable metadata tags (`metadata_options { instance_metadata_tags = "enabled" }`), which
-the guide modules already set. The `RELEASE_COOKIE` environment variable must be present for the RPC hot upgrade to run.
+the guide modules already set. The hot upgrade runs `deployex rpc` against the running node; DeployEx passes the live distribution
+cookie to that call automatically, so you do not need to set `RELEASE_COOKIE` for the worker.
 
 ### Choosing the right release file
 
