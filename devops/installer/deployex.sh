@@ -318,9 +318,15 @@ hot_upgrade_deployex() {
 
 hot_update_deployex() {
   local OS_TARGET=$1 OTP_VERSION=$2 BASE_RELEASE=$3
-  local RELEASE_PATH
+  local RELEASE_PATH VERSIONED_PATH
   RELEASE_PATH=$(download_and_verify_release "$OS_TARGET" "$OTP_VERSION" "$BASE_RELEASE")
-  hot_upgrade_deployex "$RELEASE_PATH"
+  # deployex_execute parses the TARGET version from the filename and expects
+  # deployex-<version>.tar.gz. The downloaded asset is named
+  # deployex-<os_target>-otp-<otp>.tar.gz, so copy it to the version-named form
+  # first, otherwise the version check fails with :no_match_versions.
+  VERSIONED_PATH="/tmp/deployex-${version}.tar.gz"
+  cp "$RELEASE_PATH" "$VERSIONED_PATH"
+  hot_upgrade_deployex "$VERSIONED_PATH"
 }
 
 # Initialize variables
