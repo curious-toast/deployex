@@ -380,6 +380,43 @@ Use the DeployEx web interface to download a release from GitHub:
 5. Click **Apply**
 6. Monitor the progress modal until the hot-upgrade completes successfully
 
+### Method 4: Terraform (IaC) self-upgrade
+
+DeployEx can upgrade itself when Terraform publishes a new version. You bump one variable and apply. DeployEx does the rest.
+This method is opt-in and disabled by default.
+
+How it works:
+
+1. Terraform writes `deployex_version` to the instance. On AWS it is an instance tag. On GCP it is an instance metadata attribute.
+   A version bump updates the tag or attribute in place, so the instance is not replaced.
+2. A reconciler in DeployEx (`Deployer.SelfUpgrade.Worker`) reads that desired version on a schedule.
+3. When the desired version differs from the running version, DeployEx downloads the release and runs a hot upgrade of itself.
+
+Enable it in config:
+
+```elixir
+config :deployer, Deployer.SelfUpgrade,
+  enabled: true,
+  policy: :hot_only,
+  interval_ms: 60_000,
+  dist_base_url: nil
+
+# Select the source that matches the cloud:
+config :deployer, Deployer.SelfUpgrade.Source, adapter: Deployer.SelfUpgrade.Source.Aws
+# or, on GCP:
+# config :deployer, Deployer.SelfUpgrade.Source, adapter: Deployer.SelfUpgrade.Source.Gcp
+```
+
+Policy:
+
+- `:hot_only` (default) tries a hot upgrade only. If the target is not hot-upgradeable, for example a new OTP line, DeployEx stays
+  on the current version and reports the failure. You then upgrade with one of the manual methods above.
+- `:allow_restart` tries a hot upgrade first, then falls back to the `--update` restart path when a hot upgrade is not possible.
+
+To roll out a new version: set `deployex_version` in Terraform, run `terraform apply`, then watch the DeployEx logs for the
+self-upgrade result. The AWS instance must enable metadata tags (`metadata_options { instance_metadata_tags = "enabled" }`), which
+the guide modules already set. The `RELEASE_COOKIE` environment variable must be present for the RPC hot upgrade to run.
+
 ### Choosing the right release file
 
 Each release publishes one artifact per OTP line, `deployex-ubuntu-24.04-otp-28.tar.gz` and `deployex-ubuntu-24.04-otp-29.tar.gz`.
