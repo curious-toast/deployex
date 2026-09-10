@@ -113,8 +113,12 @@ defmodule Deployer.SelfUpgrade.Worker do
     end
   end
 
+  # Telemetry and PubSub are observability only. They must never be load-bearing
+  # for the upgrade: a failure here must not crash the worker after an upgrade ran.
   defp emit(event, meta) do
     :telemetry.execute([:deployer, :self_upgrade, event], %{count: 1}, meta)
     Phoenix.PubSub.broadcast(Deployer.PubSub, "self_upgrade", {:self_upgrade, event, meta})
+  rescue
+    error -> Logger.warning("Self-upgrade: emit #{inspect(event)} failed: #{inspect(error)}")
   end
 end
