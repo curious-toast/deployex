@@ -22,7 +22,13 @@ defmodule Deployer.SelfUpgrade.Executor.Shell do
   defp run(op, version) do
     args = [op, config_file(), "--set-version", version] ++ dist_args()
 
-    case System.cmd(script(), args, stderr_to_stdout: true) do
+    # The installer runs `deployex rpc` against the running node. That RPC needs
+    # the live distribution cookie, which the secrets provider may have set via
+    # Node.set_cookie/2 at boot, leaving the OS RELEASE_COOKIE env at its stale
+    # default. Pass the live cookie so the ephemeral rpc node connects.
+    env = [{"RELEASE_COOKIE", Node.get_cookie() |> to_string()}]
+
+    case System.cmd(script(), args, stderr_to_stdout: true, env: env) do
       {out, 0} ->
         Logger.info("Self-upgrade #{op} to #{version} ok: #{out}")
         :ok
