@@ -54,6 +54,27 @@ defmodule Foundation.ConfigProvider.Env.Config do
             updated_config
           end
 
+        # Self-Upgrade Config
+        updated_config =
+          if yaml_config.self_upgrade.enabled do
+            Config.Reader.merge(updated_config,
+              deployer: [
+                {Deployer.SelfUpgrade,
+                 [
+                   enabled: true,
+                   policy: String.to_atom(yaml_config.self_upgrade.policy),
+                   interval_ms: yaml_config.self_upgrade.interval_ms,
+                   dist_base_url: yaml_config.self_upgrade.dist_base_url,
+                   script: yaml_config.self_upgrade.installer_script
+                 ]},
+                {Deployer.SelfUpgrade.Source,
+                 [adapter: self_upgrade_source_adapter(yaml_config.self_upgrade.source)]}
+              ]
+            )
+          else
+            updated_config
+          end
+
         # Endpoint Config
         updated_config =
           Config.Reader.merge(updated_config,
@@ -122,4 +143,10 @@ defmodule Foundation.ConfigProvider.Env.Config do
         config
     end
   end
+
+  # NOTE: these are only used as config keys/values (atoms), never aliased or called
+  #       directly, to avoid a foundation -> deployer compile-time dependency.
+  defp self_upgrade_source_adapter("aws"), do: Deployer.SelfUpgrade.Source.Aws
+  defp self_upgrade_source_adapter("gcp"), do: Deployer.SelfUpgrade.Source.Gcp
+  defp self_upgrade_source_adapter(_source), do: Deployer.SelfUpgrade.Source.Local
 end
