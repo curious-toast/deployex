@@ -110,5 +110,9 @@ jobs:
       - name: Release the files
         uses: ncipollo/release-action@v1
         with:
+          # Idempotent re-cuts: update an existing release for the tag instead of
+          # failing with 422 already_exists, and replace its artifacts.
+          allowUpdates: true
+          replacesArtifacts: true
           artifacts: "deployex-ubuntu-24.04-otp-*.tar.gz, deployex.sh, checksum.txt"
           bodyFile: "CHANGELOG.md"
