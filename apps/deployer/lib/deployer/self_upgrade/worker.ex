@@ -156,6 +156,7 @@ defmodule Deployer.SelfUpgrade.Worker do
     case result do
       {out, 0} ->
         Logger.info("Self-upgrade: hot upgrade to #{version} ok: #{out}")
+        Logger.info("Self-upgrade: test release B worker is live")
         emit(:hot_ok, %{version: version})
         %{state | last_failed: nil}
 
