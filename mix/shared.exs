@@ -1,5 +1,5 @@
 defmodule Mix.Shared do
-  def version, do: "0.10.10"
+  def version, do: "0.10.11"
 
   # Process.set_label/1 (used to label anonymous workers and LiveView processes) is Elixir 1.17+.
   def elixir, do: "~> 1.17"
