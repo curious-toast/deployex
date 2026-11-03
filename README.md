@@ -96,16 +96,16 @@ You can kickstart the setup with the following commands, the default number of r
 ```bash
 mix deps.get
 iex --sname deployex --cookie cookie -S mix phx.server
-Erlang/OTP 29 [erts-17.0.6] [source] [64-bit] [smp:10:10] [ds:10:10:10] [async-threads:1] [jit]
+Erlang/OTP 29 [erts-17.1.1] [source] [64-bit] [smp:10:10] [ds:10:10:10] [async-threads:1] [jit]
 
 [info] Initializing Host Memory Server
 [info] Initializing HotUpgrade server                                                                                                         
 [info] Initializing Engine Server for myphoenixapp
 [info] Initializing ConfigWatcher for YAML configuration
 [info] Initializing Watchdog Server
-[info] Running DeployexWeb.Endpoint with Bandit 1.12.5 at 127.0.0.1:5001 (http)
+[info] Running DeployexWeb.Endpoint with Bandit 1.14.1 at 127.0.0.1:5001 (http)
 [info] Access DeployexWeb.Endpoint at http://localhost:5001
-Interactive Elixir (1.20.4) - press Ctrl+C to exit (type h() ENTER for help)
+Interactive Elixir (1.20.5) - press Ctrl+C to exit (type h() ENTER for help)
 [watch] build finished, watching for changes...
 
 Rebuilding...
