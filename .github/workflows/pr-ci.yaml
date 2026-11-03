@@ -104,6 +104,9 @@ jobs:
       - name: Mix Audit
         run: mix deps.audit
 
+      - name: Hex Audit
+        run: mix hex.audit
+
       - name: Mix Sobelow
         run: mix sobelow -r apps/deployex_web --exit --threshold medium --skip -i Config.HTTPS
 

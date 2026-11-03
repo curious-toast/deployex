@@ -61,6 +61,7 @@ mix dialyzer
 
 # Security audit
 mix deps.audit
+mix hex.audit
 mix sobelow -r apps/deployex_web --exit --threshold medium --skip -i Config.HTTPS
 
 # Generate docs
@@ -215,6 +216,7 @@ All PRs target `main` and must pass `.github/workflows/pr-ci.yaml`:
 | Credo | `mix credo --strict` |
 | Docs | `mix docs --failed` |
 | Dependency audit | `mix deps.audit` |
+| Hex audit | `mix hex.audit` |
 | Security | `mix sobelow -r apps/deployex_web --exit --threshold medium --skip -i Config.HTTPS` |
 | Formatting | `mix format --check-formatted` |
 | Dialyzer | `mix dialyzer --format github` |
