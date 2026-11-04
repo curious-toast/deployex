@@ -264,8 +264,14 @@ const hooks = {
   // control in the row. The chevron stays the keyboard control
   RowToggle: {
     mounted() {
+      const control = (e) => e.target.closest("button, a, [role=button]");
+      // The later clicks of a double or triple click select no word, and toggle nothing more, so a quick
+      // double click opens the row once. Text selected by a drag still keeps the row as it is
+      this.el.addEventListener("mousedown", (e) => {
+        if (e.detail > 1 && !control(e)) e.preventDefault();
+      });
       this.el.addEventListener("click", (e) => {
-        if (e.target.closest("button, a, [role=button]") || String(window.getSelection())) return;
+        if (e.detail > 1 || control(e) || String(window.getSelection())) return;
         this.pushEvent("toggle-app", { name: this.el.dataset.name });
       });
     }
