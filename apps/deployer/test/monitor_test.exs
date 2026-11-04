@@ -1023,6 +1023,41 @@ defmodule Deployer.MonitorTest do
     end
 
     @tag :capture_log
+    test "An instance keeps its latest restarts, newest first, with their cause", context do
+      monitor = start_running_monitor(context, fn _command -> exit_pre_command(:normal) end)
+      %{current_pid: app_pid} = :sys.get_state(monitor)
+
+      assert :ok =
+               MonitorApp.restart(context.elixir_sname, cause: :watchdog, detail: "process 91%")
+
+      assert %{
+               force_restart_count: 1,
+               watchdog_restart_count: 1,
+               restarts: [%{cause: :watchdog, detail: "process 91%", at: %DateTime{}}]
+             } = :sys.get_state(monitor)
+
+      # The instance runs again, then crashes
+      :sys.replace_state(monitor, &%{&1 | current_pid: app_pid})
+      send(monitor, {:EXIT, app_pid, {:exit_status, 256}})
+
+      assert %{restarts: [%{cause: :crash, detail: nil}, %{cause: :watchdog}]} =
+               :sys.get_state(monitor)
+
+      # An operator restart counts apart from the watchdog's, and only the latest 10 stay
+      old = for _ <- 1..10, do: %{at: ~U[2026-10-01 00:00:00Z], cause: :crash, detail: nil}
+      :sys.replace_state(monitor, &%{&1 | current_pid: app_pid, restarts: old})
+      assert :ok = MonitorApp.restart(context.elixir_sname)
+
+      assert %{watchdog_restart_count: 1, force_restart_count: 2, restarts: restarts} =
+               :sys.get_state(monitor)
+
+      assert [%{cause: :operator} | _] = restarts
+      assert length(restarts) == 10
+
+      assert :ok = MonitorApp.stop_service(context.elixir_name, context.elixir_sname)
+    end
+
+    @tag :capture_log
     test "A request while a restart is starting the application is busy", context do
       start_running_monitor(context, fn _command -> exit_pre_command(:normal) end)
 
@@ -1670,7 +1705,7 @@ defmodule Deployer.MonitorTest do
     |> expect(:start_service, fn _service -> {:ok, self()} end)
     |> expect(:stop_service, fn _name, _sname -> :ok end)
     |> expect(:state, fn _sname -> {:ok, %{}} end)
-    |> expect(:restart, fn _sname -> :ok end)
+    |> expect(:restart, fn _sname, [] -> :ok end)
     |> expect(:run_pre_commands, fn _sname, cmds, _new_or_current -> {:ok, cmds} end)
     |> expect(:start_pre_commands, fn _sname, _cmds, _new_or_current -> {:ok, make_ref()} end)
     |> expect(:cancel_pre_commands, fn _sname, _ref -> :ok end)

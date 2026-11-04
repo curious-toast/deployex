@@ -312,7 +312,8 @@ const hooks = {
       this.el.addEventListener("pointerenter", this.show);
       this.el.addEventListener("pointerleave", this.hide);
       this.el.addEventListener("focusin", (e) => e.target.matches(":focus-visible") && this.show());
-      this.el.addEventListener("focusout", this.hide);
+      // The focus can move into the tooltip, like to a link in it, and it stays open
+      this.el.addEventListener("focusout", (e) => !this.el.contains(e.relatedTarget) && this.hide());
     },
 
     updated() {

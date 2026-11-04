@@ -66,7 +66,7 @@ defmodule DeployexWeb.RecentEvents do
             tone: tone,
             title: title,
             detail: detail,
-            href: history_href(payload, recent.at)
+            href: history_href(payload |> instance() |> List.first(), recent.at)
           }
         ]
     end
@@ -141,9 +141,13 @@ defmodule DeployexWeb.RecentEvents do
   defp fields(fields) when is_list(fields), do: Enum.map_join(fields, ", ", &to_string/1)
   defp fields(_fields), do: ""
 
-  # Every item opens History at the event's time, with the events and the logs of the instance it names
-  defp history_href(payload, at) do
-    sources = Enum.join(["events" | instance(payload)], ",")
+  @doc """
+  The History logs at a time, with the events, and the logs of an instance when one is given. Every bell
+  item opens it at the event's time.
+  """
+  @spec history_href(String.t() | nil, DateTime.t()) :: String.t()
+  def history_href(sname, at) do
+    sources = Enum.join(["events" | List.wrap(sname)], ",")
     "/logs/history?" <> URI.encode_query(source: sources, since: DateTime.to_unix(at))
   end
 

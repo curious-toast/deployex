@@ -219,33 +219,55 @@ defmodule DeployexWeb.ApplicationsLive.ViewTest do
       child(%{
         crash_restart_count: 2,
         force_restart_count: 1,
-        last_crash_at: ~U[2026-10-28 14:31:00Z]
+        watchdog_restart_count: 1,
+        restarts: [
+          %{at: ~U[2026-10-28 15:40:00Z], cause: :watchdog, detail: "process 91%"},
+          %{at: ~U[2026-10-28 14:31:00Z], cause: :crash, detail: nil}
+        ]
       }),
-      child(%{sname: "myapp-def", force_restart_count: 1}),
-      child(%{sname: "myapp-ghi"})
+      child(%{
+        sname: "myapp-def",
+        force_restart_count: 1,
+        restarts: [%{at: ~U[2026-10-28 15:10:00Z], cause: :operator, detail: nil}]
+      }),
+      child(%{sname: "myapp-ghi", crash_restart_count: 1, restarts: []})
     ]
 
-    assert [%{restarts: app_restarts, instances: [crashed, forced, none]}] =
+    assert [%{restarts: app_restarts, instances: [watched, operated, none]}] =
              View.apps([app(children)], %{}, @now)
 
-    assert app_restarts == %{
-             count: 4,
-             crash: true,
-             lines: [
-               "2 crash restarts, the last at #{HostTime.format(~U[2026-10-28 14:31:00Z], "%H:%M")}",
-               "2 restarts by an operator or the watchdog"
-             ]
-           }
+    assert %{count: 5, crash: true, totals: "3 crashes, 1 by an operator, 1 by the watchdog"} =
+             app_restarts
 
-    assert %{count: 3, crash: true} = crashed.restarts
+    # The latest restarts of every instance, newest first, each a link to the logs at its time
+    assert [
+             %{sname: "myapp-abc", text: "watchdog, process 91%", href: href},
+             %{sname: "myapp-def", text: "operator"},
+             %{sname: "myapp-abc", text: "crash"}
+           ] = app_restarts.latest
 
-    assert forced.restarts == %{
-             count: 1,
-             crash: false,
-             lines: ["1 restart by an operator or the watchdog"]
-           }
+    assert href ==
+             "/logs/history?" <>
+               URI.encode_query(
+                 source: "events,myapp-abc",
+                 since: DateTime.to_unix(~U[2026-10-28 15:40:00Z])
+               )
 
-    assert none.restarts == %{count: 0, crash: false, lines: ["No restarts"]}
+    assert hd(app_restarts.latest).time == HostTime.format(~U[2026-10-28 15:40:00Z], "%H:%M")
+
+    assert %{count: 3, totals: "2 crashes, 1 by the watchdog", latest: [_, _]} = watched.restarts
+    assert %{count: 1, crash: false, totals: "1 by an operator"} = operated.restarts
+    assert %{count: 1, totals: "1 crash", latest: []} = none.restarts
+
+    assert [%{restarts: %{count: 0, totals: "No restarts"}}] =
+             View.apps([app([child(%{})])], %{}, @now)
+
+    # A restart older than a day shows its date
+    old =
+      child(%{crash_restart_count: 1, restarts: [%{at: ~U[2026-10-20 09:00:00Z], cause: :crash}]})
+
+    assert [%{restarts: %{latest: [%{time: time}]}}] = View.apps([app([old])], %{}, @now)
+    assert time == HostTime.format(~U[2026-10-20 09:00:00Z], "%b %d %H:%M")
   end
 
   test "the limits follow the Watchdog's config, and a type it does not watch has no restart mark" do

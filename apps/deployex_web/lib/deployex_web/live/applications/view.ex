@@ -5,6 +5,7 @@ defmodule DeployexWeb.ApplicationsLive.View do
   """
 
   alias DeployexWeb.HostTime
+  alias DeployexWeb.RecentEvents
 
   @limit_types [{"Processes", :process}, {"Ports", :port}, {"Atoms", :atom}]
   @tls_warn_days 30
@@ -96,7 +97,7 @@ defmodule DeployexWeb.ApplicationsLive.View do
       cpu: sum_text(instances, :cpu_value, &cpu_text/1),
       cpu_tip: cpu_tip(sum(instances, :cpu_value), Enum.find_value(instances, & &1.cores)),
       memory: sum_text(instances, :memory_value, &bytes/1),
-      restarts: restarts(status.children),
+      restarts: restarts(status.children, now),
       deploy: deploy(status, ghosted, now),
       alert: alert,
       urgent: urgent(tls, instances),
@@ -122,7 +123,7 @@ defmodule DeployexWeb.ApplicationsLive.View do
       cpu: cpu_text(resources && resources.cpu),
       cpu_tip: cpu_tip(resources && resources.cpu, resources && resources.cores),
       memory: if(resources && resources.memory, do: bytes(resources.memory), else: "--"),
-      restarts: restarts([child]),
+      restarts: restarts([child], now),
       ports: Enum.map(List.wrap(child.ports), &Map.take(&1, [:key, :base])),
       urls: List.wrap(child.urls),
       deploy: child.last_deployment,
@@ -447,36 +448,53 @@ defmodule DeployexWeb.ApplicationsLive.View do
     end
   end
 
-  # One count for the board, amber only for crashes, with a tooltip that tells crashes from the restarts an
-  # operator or the watchdog asked for
-  defp restarts(children) do
+  # One count for the board, amber only for crashes. The tooltip tells crashes, operator and watchdog
+  # restarts apart, and lists the latest ones newest first, each a link to the logs at its time
+  defp restarts(children, now) do
     crash = Enum.reduce(children, 0, &(&1.crash_restart_count + &2))
     forced = Enum.reduce(children, 0, &(&1.force_restart_count + &2))
+    watchdog = Enum.reduce(children, 0, &(Map.get(&1, :watchdog_restart_count, 0) + &2))
 
-    last_crash =
-      children
-      |> Enum.map(& &1.last_crash_at)
-      |> Enum.reject(&is_nil/1)
-      |> Enum.max(DateTime, fn -> nil end)
-
-    lines =
+    totals =
       [
-        crash > 0 && crash_text(crash, last_crash),
-        forced > 0 && "#{count(forced, "restart")} by an operator or the watchdog"
+        crash > 0 && crashes(crash),
+        forced > watchdog && "#{forced - watchdog} by an operator",
+        watchdog > 0 && "#{watchdog} by the watchdog"
       ]
       |> Enum.filter(& &1)
+
+    latest =
+      children
+      |> Enum.flat_map(fn child -> Enum.map(List.wrap(child.restarts), &{child.sname, &1}) end)
+      |> Enum.sort_by(fn {_sname, restart} -> restart.at end, {:desc, DateTime})
+      |> Enum.take(10)
+      |> Enum.map(&latest_restart(&1, now))
+
+    totals = if totals == [], do: "No restarts", else: Enum.join(totals, ", ")
 
     %{
       count: crash + forced,
       crash: crash > 0,
-      lines: if(lines == [], do: ["No restarts"], else: lines)
+      totals: totals,
+      label: "#{count(crash + forced, "restart")}: #{totals}",
+      latest: latest
     }
   end
 
-  defp crash_text(crash, nil), do: count(crash, "crash restart")
+  defp latest_restart({sname, %{at: at, cause: cause} = restart}, now) do
+    format = if DateTime.diff(now, at) < 86_400, do: "%H:%M", else: "%b %d %H:%M"
 
-  defp crash_text(crash, at),
-    do: "#{count(crash, "crash restart")}, the last at #{HostTime.format(at, "%H:%M")}"
+    %{
+      id: "#{sname}-#{DateTime.to_unix(at)}",
+      time: HostTime.format(at, format),
+      sname: sname,
+      text: Enum.join(Enum.filter([to_string(cause), restart[:detail]], & &1), ", "),
+      href: RecentEvents.history_href(sname, at)
+    }
+  end
+
+  defp crashes(1), do: "1 crash"
+  defp crashes(n), do: "#{n} crashes"
 
   defp count(1, noun), do: "1 #{noun}"
   defp count(n, noun), do: "#{n} #{noun}s"

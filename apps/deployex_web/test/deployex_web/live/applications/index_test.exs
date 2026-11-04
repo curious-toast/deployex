@@ -249,12 +249,43 @@ defmodule DeployexWeb.Applications.IndexTest do
   end
 
   @tag :capture_log
+  test "a restart count lists the latest restarts, each a link to the logs at its time", %{
+    conn: conn
+  } do
+    at = ~U[2026-10-28 15:40:00Z]
+
+    stub_monitoring([
+      FixtureStatus.application(%{
+        name: "myphoenixapp",
+        force_restart_count: 1,
+        watchdog_restart_count: 1,
+        restarts: [%{at: at, cause: :watchdog, detail: "process 91%"}]
+      })
+    ])
+
+    {:ok, view, html} = live(conn, ~p"/applications")
+
+    assert html =~ ~s(aria-label="1 restart: 1 by the watchdog")
+    assert html =~ "watchdog, process 91%"
+
+    href =
+      "/logs/history?" <>
+        URI.encode_query(source: "events,myphoenixapp-abc123", since: DateTime.to_unix(at))
+
+    view
+    |> element(~s(#app-myphoenixapp-restarts a[href="#{href}"]))
+    |> render_click()
+
+    assert_redirect(view, href)
+  end
+
+  @tag :capture_log
   test "GET /applications restarts an instance after an inline confirmation", %{conn: conn} do
     test_pid = self()
     stub_monitoring([FixtureStatus.application(%{name: "myphoenixapp"})])
 
     Deployer.MonitorMock
-    |> expect(:restart, fn "myphoenixapp-abc123" ->
+    |> expect(:restart, fn "myphoenixapp-abc123", [cause: :operator] ->
       send(test_pid, :restarted)
       :ok
     end)

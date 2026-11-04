@@ -306,6 +306,7 @@ defmodule DeployexWeb.ApplicationsLive.Board do
             restarts={@app.restarts}
             class="text-[0.875rem] font-semibold"
             color="inherit"
+            show_sname
           />
           <div class="flex items-center gap-2 text-sm">
             <Tags.deploy_tag :if={@app.deploy} type={@app.deploy.type} label={@app.deploy.label} />
@@ -761,23 +762,48 @@ defmodule DeployexWeb.ApplicationsLive.Board do
 
   attr :restarts, :map,
     required: true,
-    doc: "the count, whether a crash is among them, and the tooltip lines"
+    doc: "the count, whether a crash is among them, the totals by cause and the latest restarts"
 
   attr :class, :string, default: nil
   attr :color, :string, required: true, doc: "the color with no crash"
 
-  # The restart count, amber for crashes, with the crash and the other restarts apart in a tooltip
+  attr :show_sname, :boolean,
+    default: false,
+    doc: "whether the latest restarts name their instance"
+
+  defp restarts(%{restarts: %{count: 0}} = assigns) do
+    ~H"""
+    <div id={@id} class={["dx-num", @class]} style={"color: #{@color}"} phx-hook="Tip">
+      0<span class="sr-only">: No restarts</span>
+      <span popover="manual" class="dx-tip" aria-hidden="true">No restarts</span>
+    </div>
+    """
+  end
+
+  # The tooltip holds links to the logs at each restart, so the count is a button that takes the focus
   defp restarts(assigns) do
     ~H"""
-    <div
-      id={@id}
-      class={["dx-num", @class]}
-      style={"color: #{if @restarts.crash, do: Tags.tone(:warning), else: @color}"}
-      phx-hook="Tip"
-    >
-      {@restarts.count}<span class="sr-only">: {Enum.join(@restarts.lines, ", ")}</span>
-      <span popover="manual" class="dx-tip" aria-hidden="true">
-        <span :for={line <- @restarts.lines} class="block">{line}</span>
+    <div id={@id} class={["dx-num", @class]} phx-hook="Tip">
+      <button
+        type="button"
+        class="dx-restarts"
+        style={"color: #{if @restarts.crash, do: Tags.tone(:warning), else: @color}"}
+        aria-label={@restarts.label}
+      >
+        {@restarts.count}
+      </button>
+      <span popover="manual" class="dx-tip">
+        <span class="block font-semibold">{@restarts.totals}</span>
+        <.link
+          :for={restart <- @restarts.latest}
+          id={"#{@id}-#{restart.id}"}
+          class="dx-tip-link"
+          navigate={restart.href}
+        >
+          <span class="dx-mono">{restart.time}</span>
+          <span :if={@show_sname} class="dx-mono">{restart.sname}</span>
+          {restart.text}
+        </.link>
       </span>
     </div>
     """

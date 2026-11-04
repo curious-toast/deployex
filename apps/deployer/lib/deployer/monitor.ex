@@ -8,6 +8,16 @@ defmodule Deployer.Monitor do
 
   @behaviour Monitor.Adapter
 
+  @typedoc """
+  A restart of the instance: a crash, or one an operator or the watchdog asked for, with the watchdog's
+  metric as its detail.
+  """
+  @type restart :: %{
+          at: DateTime.t(),
+          cause: :crash | :operator | :watchdog,
+          detail: String.t() | nil
+        }
+
   @type t :: %__MODULE__{
           current_pid: pid() | nil,
           name: String.t() | nil,
@@ -20,6 +30,8 @@ defmodule Deployer.Monitor do
           crash_restart_count: integer(),
           consecutive_crash_count: integer(),
           force_restart_count: integer(),
+          watchdog_restart_count: integer(),
+          restarts: [restart()],
           start_time: nil | integer(),
           started_at: nil | DateTime.t(),
           last_crash_at: nil | DateTime.t(),
@@ -40,6 +52,8 @@ defmodule Deployer.Monitor do
             crash_restart_count: 0,
             consecutive_crash_count: 0,
             force_restart_count: 0,
+            watchdog_restart_count: 0,
+            restarts: [],
             start_time: nil,
             started_at: nil,
             last_crash_at: nil,
@@ -70,11 +84,13 @@ defmodule Deployer.Monitor do
   def stop_service(name, sname), do: default().stop_service(name, sname)
 
   @doc """
-  This function forces a restart of the application
+  This function forces a restart of the application. The options name its `cause`, `:operator` (the default)
+  or `:watchdog`, and a `detail`, like the watchdog's metric.
   """
   @impl true
-  @spec restart(sname :: String.t()) :: :ok | {:error, :application_is_not_running}
-  def restart(sname), do: default().restart(sname)
+  @spec restart(sname :: String.t(), options :: keyword()) ::
+          :ok | {:error, :application_is_not_running}
+  def restart(sname, options \\ []), do: default().restart(sname, options)
 
   @doc """
   Retrieve the expected current version for the application

@@ -417,9 +417,11 @@ defmodule Sentinel.Watchdog.WatchdogTest do
     |> expect(:subscribe_new_deploy, fn -> :ok end)
 
     assert {:ok, pid} = Watchdog.start_link(watchdog_check_interval: 10_000)
+    test_pid = self()
 
     Deployer.MonitorMock
-    |> stub(:restart, fn _node ->
+    |> stub(:restart, fn ^sname, [cause: :watchdog, detail: detail] ->
+      send(test_pid, {:restart_detail, detail})
       send(pid, {:nodedown, node})
       :ok
     end)
@@ -453,6 +455,9 @@ defmodule Sentinel.Watchdog.WatchdogTest do
 
     assert message =~
              "[#{node}] process threshold exceeded: current 21% >= restart 20%. Initiating restart..."
+
+    # The restart names the metric, for the instance's restart history
+    assert_received {:restart_detail, "port 21%"}
 
     # Check reset after restart
     Enum.each(monitored_nodes, fn node ->
@@ -612,11 +617,11 @@ defmodule Sentinel.Watchdog.WatchdogTest do
 
     Deployer.MonitorMock
     |> stub(:restart, fn
-      ^sname_1 ->
+      ^sname_1, [cause: :watchdog, detail: "host memory " <> _percent] ->
         send(pid, {:nodedown, node_1})
         :ok
 
-      ^sname_2 ->
+      ^sname_2, [cause: :watchdog, detail: "host memory " <> _percent] ->
         send(pid, {:nodedown, node_2})
         :ok
     end)

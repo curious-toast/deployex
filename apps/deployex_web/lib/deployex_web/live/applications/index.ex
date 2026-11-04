@@ -227,7 +227,7 @@ defmodule DeployexWeb.ApplicationsLive do
   def handle_event("cancel-ask", _params, socket), do: {:noreply, assign(socket, :ask, nil)}
 
   def handle_event("restart-instance", %{"sname" => sname}, socket) do
-    Monitor.restart(sname)
+    Monitor.restart(sname, cause: :operator)
     Process.send_after(self(), {:clear_sent, sname}, @sent_window)
     {:noreply, socket |> assign(:ask, nil) |> update(:sent, &MapSet.put(&1, sname))}
   end

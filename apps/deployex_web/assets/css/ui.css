@@ -315,6 +315,26 @@
     overflow: visible;
 }
 
+/* A restart count that opens its tooltip of links, as plain as the number it shows */
+.dx-restarts {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    font: inherit;
+    cursor: default;
+}
+
+.dx-tip-link {
+    display: block;
+    padding: 2px 0;
+    color: inherit;
+    text-decoration: none;
+}
+
+.dx-tip-link:hover, .dx-tip-link:focus-visible {
+    text-decoration: underline;
+}
+
 /* Covers the gap to the trigger, so the pointer can move onto the tooltip */
 .dx-tip[popover]::before {
     content: "";

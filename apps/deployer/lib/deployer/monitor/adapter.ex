@@ -10,7 +10,7 @@ defmodule Deployer.Monitor.Adapter do
   @callback start_service(Monitor.Service.t()) ::
               {:ok, pid()} | {:error, {:already_started, pid()} | any()}
   @callback stop_service(String.t() | nil, String.t() | nil) :: :ok
-  @callback restart(String.t()) :: :ok | {:error, :application_is_not_running}
+  @callback restart(String.t(), keyword()) :: :ok | {:error, :application_is_not_running}
   @callback state(String.t()) :: Monitor.t()
   @callback subscribe_new_deploy() :: :ok
   @callback list() :: list()
