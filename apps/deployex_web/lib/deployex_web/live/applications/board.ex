@@ -7,6 +7,7 @@ defmodule DeployexWeb.ApplicationsLive.Board do
   """
   use DeployexWeb, :html
 
+  alias DeployexWeb.Guides
   alias DeployexWeb.UI.Icons
   alias DeployexWeb.UI.Tags
 
@@ -211,7 +212,7 @@ defmodule DeployexWeb.ApplicationsLive.Board do
                   ]
                 }
                 class="dx-btn"
-                href={guide_url(guide)}
+                href={Guides.url(guide)}
                 target="_blank"
                 rel="noopener noreferrer"
               >
@@ -820,13 +821,6 @@ defmodule DeployexWeb.ApplicationsLive.Board do
       </span>
     </span>
     """
-  end
-
-  # The guides of the running version on GitHub. A pre-release has no tag, so its links go to main
-  defp guide_url(guide) do
-    version = to_string(Application.spec(:deployex_web, :vsn))
-    ref = if String.contains?(version, "-"), do: "main", else: version
-    "https://github.com/deployex/deployex/blob/#{ref}/guides/docs/#{guide}/README.md"
   end
 
   defp problems([_problem]), do: "1 problem"

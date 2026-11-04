@@ -41,8 +41,9 @@ defmodule DeployexWeb.Terminal.ObserverTest do
 
     html = render(liveview)
 
-    assert html =~ host
-    assert html =~ description
+    # The top bar shows the host, and the page has no system bar of its own
     assert html =~ total_memory
+    refute html =~ host
+    refute html =~ description
   end
 end

@@ -2037,6 +2037,49 @@
     font: 0.875rem var(--dx-font-mono);
 }
 
+.dx-input {
+    width: 100%;
+    height: 40px;
+    padding: 0 12px;
+    border: 1px solid var(--dx-base-300);
+    border-radius: 6px;
+    background: var(--dx-base-100);
+    color: var(--dx-base-content);
+    font: 0.875rem var(--dx-font-sans);
+}
+
+.dx-input.dx-mono {
+    font-family: var(--dx-font-mono);
+}
+
+/* The Hot Upgrade page: the drop zone for a release, an upload, and a box of details */
+.dx-upload {
+    padding: 32px;
+    border: 2px dashed var(--dx-base-300);
+    border-radius: 8px;
+    text-align: center;
+}
+
+.dx-upload:hover {
+    border-color: color-mix(in oklab, var(--dx-nav-active) 50%, var(--dx-base-300));
+}
+
+.dx-upload-browse {
+    color: var(--dx-primary-text);
+    text-decoration: underline;
+}
+
+.dx-upload-entry, .dx-upload-box {
+    padding: 16px;
+    border: 1px solid var(--dx-base-300);
+    border-radius: 8px;
+    background: var(--dx-base-200);
+}
+
+.dx-upload-entry {
+    margin-top: 16px;
+}
+
 .dx-vrow {
     display: grid;
     grid-template-columns: 110px minmax(180px, 1fr) 150px 210px;
