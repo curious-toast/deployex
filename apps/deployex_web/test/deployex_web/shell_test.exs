@@ -142,6 +142,25 @@ defmodule DeployexWeb.ShellTest do
     assert eventually(fn -> Shell.list(user) == [] end)
   end
 
+  test "ends the tmux session when its supervisor stops it, like at a DeployEx stop", %{
+    user: user
+  } do
+    stub_shell(self())
+    {:ok, %Session{id: id}} = Shell.open(user, Shell.host())
+    assert_receive {:started, _commands}
+    {:ok, _session, _scrollback} = Shell.attach(user, Shell.host())
+
+    [{pid, _session}] = Registry.lookup(DeployexWeb.Shell.Registry, {user, Shell.host()})
+    %{terminal: terminal} = :sys.get_state(pid)
+    terminal_ref = Process.monitor(terminal)
+
+    :ok = DynamicSupervisor.terminate_child(DeployexWeb.Shell.Supervisor, pid)
+
+    assert_receive {:cleanup, "tmux kill-session -t DeployEx-" <> _}
+    assert_receive {:shell_closed, ^id}
+    assert_receive {:DOWN, ^terminal_ref, :process, _terminal, _reason}
+  end
+
   test "keeps only the last 64 KB of output", %{user: user} do
     stub_shell(self())
     {:ok, _session} = Shell.open(user, Shell.host())

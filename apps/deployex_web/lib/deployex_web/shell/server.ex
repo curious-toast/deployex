@@ -22,8 +22,10 @@ defmodule DeployexWeb.Shell.Server do
     GenServer.start_link(__MODULE__, {user, target}, name: Shell.via(user, target))
   end
 
+  # It traps exits, so a supervisor shutdown, like a DeployEx stop, runs terminate and ends the tmux session
   @impl true
   def init({user, target}) do
+    Process.flag(:trap_exit, true)
     id = random_id()
 
     case Commands.build(target, id) do
@@ -96,7 +98,8 @@ defmodule DeployexWeb.Shell.Server do
     if message in [nil, ""] do
       {:noreply, state}
     else
-      Phoenix.PubSub.broadcast(
+      # Every page that follows a session runs on this node, so the output stays here, not on peers
+      Phoenix.PubSub.local_broadcast(
         DeployexWeb.PubSub,
         Shell.topic(state.session.id),
         {:shell_output, state.session.id, message}
@@ -116,7 +119,7 @@ defmodule DeployexWeb.Shell.Server do
   def terminate(_reason, %{session: session}) do
     Registry.unregister(@registry, {session.user, session.target})
 
-    Phoenix.PubSub.broadcast(
+    Phoenix.PubSub.local_broadcast(
       DeployexWeb.PubSub,
       Shell.topic(session.id),
       {:shell_closed, session.id}
