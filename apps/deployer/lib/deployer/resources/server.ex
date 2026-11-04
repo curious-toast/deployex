@@ -115,8 +115,9 @@ defmodule Deployer.Resources.Server do
     %{state | instances: instances}
   end
 
+  # DeployEx samples itself too, for its own row
   defp running_instances do
-    Enum.reduce(Monitor.list(), [], fn sname, acc ->
+    Enum.reduce(Monitor.list(), [{"deployex", Node.self()}], fn sname, acc ->
       with true <- sname |> Monitor.state() |> Monitor.serving?(),
            %{node: node} <- Catalog.node_info(sname) do
         [{sname, node} | acc]

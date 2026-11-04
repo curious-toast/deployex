@@ -1163,30 +1163,51 @@
 }
 
 /* A link the size of a limit box, like Observer Web next to the limits */
-/* The node, ports and served URLs of an instance, in a box above its limits, each label over its value */
+/* The node, URLs and ports of an instance, in a box above its limits, each label left of its value */
 .dx-idetail {
     grid-column: 1 / -1;
     display: flex;
-    flex-wrap: wrap;
-    row-gap: 8px;
-    margin: 0;
-    padding: 10px 0;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    padding: 10px 16px;
     border: 1px solid var(--dx-base-300);
     border-radius: 8px;
     background: var(--dx-base-200);
     font-size: 0.8125rem;
 }
 
-.dx-ditem {
+.dx-idetail dl {
     display: flex;
     flex-direction: column;
-    gap: 3px;
-    min-width: 0;
-    padding: 0 16px;
+    gap: 4px;
+    width: 100%;
+    margin: 0;
 }
 
-.dx-ditem + .dx-ditem {
-    border-left: 1px solid var(--dx-base-300);
+.dx-drow {
+    display: grid;
+    grid-template-columns: 7.5rem minmax(0, 1fr);
+    align-items: baseline;
+    gap: 12px;
+}
+
+/* The OTP distribution, a click away under the rows */
+.dx-dtoggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 28px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--dx-muted);
+    font: 600 0.75rem/1 var(--dx-font-sans);
+    cursor: pointer;
+}
+
+.dx-dtoggle:hover {
+    color: var(--dx-base-content);
 }
 
 .dx-copy {
@@ -1206,13 +1227,13 @@
     color: var(--dx-base-content);
 }
 
-.dx-ditem dd {
+.dx-drow dd {
     margin: 0;
     overflow-wrap: anywhere;
 }
 
 /* A link here stands alone, so it gets the 24px target */
-.dx-ditem dd a {
+.dx-drow dd a {
     display: inline-flex;
     align-items: center;
     min-height: 24px;

@@ -339,6 +339,7 @@ defmodule Deployer.Status.Application do
       status: :running,
       uptime: uptime,
       started_at: deployex_started_at(),
+      resources: Deployer.Resources.get(name),
       latest_release: deployex_latest_release,
       monitoring: Application.get_env(:foundation, :monitoring),
       certificates: certificates,

@@ -88,9 +88,6 @@ defmodule DeployexWeb.ApplicationsLive.Board do
             <Tags.lang name={@host.icon} small label={@host.system} />{@host.system}
           </span>
           <span class="dx-stat"><span class="dx-lbl">Up</span><b>{@host.up}</b></span>
-          <span class="dx-stat">
-            <span class="dx-lbl">DeployEx</span><b>{@host.version}</b><span class="dx-muted">on OTP {@host.otp}</span>
-          </span>
         </div>
         <div class="flex flex-wrap items-center gap-2">
           <button
@@ -143,6 +140,16 @@ defmodule DeployexWeb.ApplicationsLive.Board do
   end
 
   attr :apps, :list, required: true
+
+  attr :deployex, :map,
+    default: nil,
+    doc: "the DeployEx row, first in the list, when the filter keeps it"
+
+  attr :distribution, :map,
+    default: %{},
+    doc:
+      "the OTP distribution of each instance whose section is open, by sname, nil with no answer"
+
   attr :open, :any, required: true, doc: "the names of the expanded apps"
 
   attr :limits_open, :map,
@@ -152,6 +159,10 @@ defmodule DeployexWeb.ApplicationsLive.Board do
   attr :ask, :any, required: true
   attr :sent, :any, required: true, doc: "the snames with a restart sent"
   attr :total, :integer, required: true, doc: "the apps on this host, shown or not"
+
+  attr :rows, :integer,
+    default: 0,
+    doc: "the rows of the list, shown or not, DeployEx with the apps"
 
   attr :loaded, :boolean,
     default: true,
@@ -221,10 +232,11 @@ defmodule DeployexWeb.ApplicationsLive.Board do
             </div>
           </div>
           <.app_row
-            :for={app <- @apps}
+            :for={app <- List.wrap(@deployex) ++ @apps}
             app={app}
             open={MapSet.member?(@open, app.name)}
             limits_open={@limits_open}
+            distribution={@distribution}
             ask={@ask}
             sent={@sent}
             cleared={@cleared[app.name]}
@@ -237,9 +249,9 @@ defmodule DeployexWeb.ApplicationsLive.Board do
         role="status"
       >
         <span>
-          {if @apps == [],
+          {if @deployex == nil and @apps == [],
             do: "No app matches these filters.",
-            else: "#{length(@apps)} of #{@total} apps match."}
+            else: "#{length(List.wrap(@deployex) ++ @apps)} of #{@rows} apps match."}
         </span>
         <.link id="apps-show-all" class="dx-btn no-underline" patch={~p"/applications"}>
           Clear
@@ -252,6 +264,7 @@ defmodule DeployexWeb.ApplicationsLive.Board do
   attr :app, :map, required: true
   attr :open, :boolean, required: true
   attr :limits_open, :map, required: true
+  attr :distribution, :map, required: true
   attr :ask, :any, required: true
   attr :sent, :any, required: true
   attr :cleared, :any, required: true
@@ -302,12 +315,14 @@ defmodule DeployexWeb.ApplicationsLive.Board do
           />
           <div class="dx-num text-[0.875rem] font-semibold">{@app.memory}</div>
           <.restarts
+            :if={@app.restarts}
             id={"app-#{@app.name}-restarts"}
             restarts={@app.restarts}
             class="text-[0.875rem] font-semibold"
             color="inherit"
             show_sname
           />
+          <div :if={!@app.restarts} class="dx-num dx-muted text-[0.875rem]">--</div>
           <div class="flex items-center gap-2 text-sm">
             <Tags.deploy_tag :if={@app.deploy} type={@app.deploy.type} label={@app.deploy.label} />
             <span :if={@app.deploy} class="dx-muted">{@app.deploy.when}</span>
@@ -351,6 +366,19 @@ defmodule DeployexWeb.ApplicationsLive.Board do
       </div>
 
       <div :if={@open} class="dx-inset">
+        <div
+          :if={@app.config_line || @app.certificates != []}
+          id={"app-#{@app.name}-config"}
+          class="flex flex-col gap-1 border-b border-(--dx-base-300) px-4 py-2.5 text-[0.8125rem]"
+        >
+          <span :if={@app.config_line} class="dx-mono">{@app.config_line}</span>
+          <span :for={certificate <- @app.certificates} class="flex flex-wrap items-center gap-x-2">
+            <Icons.icon name="lock-closed" class="dx-ico dx-muted size-3.5" />
+            <span class="dx-mono">{certificate.domains}</span>
+            <span style={"color: #{Tags.tone(certificate.tone)}"}>{certificate.expires}</span>
+            <span :if={certificate.issuer} class="dx-muted">issued by {certificate.issuer}</span>
+          </span>
+        </div>
         <div :if={@app.notes != []} class="flex flex-col gap-1 px-4 py-2.5 text-[0.8125rem]">
           <span
             :for={note <- @app.notes}
@@ -365,6 +393,8 @@ defmodule DeployexWeb.ApplicationsLive.Board do
           app={@app.name}
           instance={instance}
           limits_open={Map.get(@limits_open, instance.sname, false)}
+          distribution={@distribution[instance.sname]}
+          distribution_open={Map.has_key?(@distribution, instance.sname)}
           asking={@ask == instance.sname}
           sent={MapSet.member?(@sent, instance.sname)}
         />
@@ -389,7 +419,10 @@ defmodule DeployexWeb.ApplicationsLive.Board do
           </button>
           <button type="button" class="dx-btn" phx-click="cancel-ask">Cancel</button>
         </div>
-        <div class="flex flex-wrap gap-2 border-t border-(--dx-base-300) px-4 py-2.5">
+        <div
+          :if={@app.name != "deployex"}
+          class="flex flex-wrap gap-2 border-t border-(--dx-base-300) px-4 py-2.5"
+        >
           <button
             type="button"
             class="dx-btn"
@@ -504,7 +537,13 @@ defmodule DeployexWeb.ApplicationsLive.Board do
     ~H"""
     <div id={"app-#{@app}-urgent-#{@index}"} class="dx-callout dx-callout-error">
       <Icons.icon
-        name={if @item.kind == :tls, do: "lock-closed", else: "warning"}
+        name={
+          case @item.kind do
+            :tls -> "lock-closed"
+            :otp -> "signal"
+            _limit -> "warning"
+          end
+        }
         stroke="2"
         class="dx-ico dx-callout-ico"
       />
@@ -521,7 +560,7 @@ defmodule DeployexWeb.ApplicationsLive.Board do
           View events
         </.link>
         <button
-          :if={@item.kind == :limit}
+          :if={@item.kind in [:limit, :otp]}
           type="button"
           class="dx-btn"
           phx-click="show-instance"
@@ -538,6 +577,8 @@ defmodule DeployexWeb.ApplicationsLive.Board do
   attr :app, :string, required: true
   attr :instance, :map, required: true
   attr :limits_open, :boolean, required: true
+  attr :distribution, :map, default: nil, doc: "from `DeployexWeb.Instances.distribution/2`"
+  attr :distribution_open, :boolean, default: false
   attr :asking, :boolean, required: true
   attr :sent, :boolean, required: true
 
@@ -596,11 +637,13 @@ defmodule DeployexWeb.ApplicationsLive.Board do
         />
         <div class="dx-num text-[0.8125rem]">{@instance.memory}</div>
         <.restarts
+          :if={@instance.restarts}
           id={"instance-#{@instance.sname}-restarts"}
           restarts={@instance.restarts}
           class="text-[0.8125rem]"
           color={Tags.tone(:muted)}
         />
+        <div :if={!@instance.restarts} class="dx-num dx-muted text-[0.8125rem]">--</div>
         <div class="flex items-center gap-1.5">
           <Tags.deploy_tag type={if @instance.deploy == :hot_upgrade, do: :hot, else: :full} />
           <span :if={@instance.up} class="dx-mono dx-muted text-xs">up {@instance.up}</span>
@@ -632,6 +675,7 @@ defmodule DeployexWeb.ApplicationsLive.Board do
             <span popover="manual" class="dx-tip" aria-hidden="true">Observer Web</span>
           </span>
           <.icon_action
+            :if={@app != "deployex"}
             id={"instance-#{@instance.sname}-restart"}
             icon={if @sent, do: "check", else: "arrow-path"}
             tip={if @sent, do: "Restart sent", else: "Restart…"}
@@ -671,36 +715,87 @@ defmodule DeployexWeb.ApplicationsLive.Board do
         role="group"
         aria-label={"Details and limits of #{@instance.sname}"}
       >
-        <dl class="dx-idetail">
-          <div :if={@instance.node} class="dx-ditem">
-            <dt class="dx-lbl">Node</dt>
-            <dd class="dx-mono">
-              {@instance.node}<.copy_button
-                id={"instance-#{@instance.sname}-copy-node"}
-                text={@instance.node}
-                label="node name"
-              />
-            </dd>
-          </div>
-          <div :for={port <- @instance.ports} class="dx-ditem">
-            <dt class="dx-lbl">{port.key}</dt>
-            <dd class="dx-mono">{port.base}</dd>
-          </div>
-          <div :for={{url, index} <- Enum.with_index(@instance.urls)} class="dx-ditem">
-            <dt class="dx-lbl">URL</dt>
-            <dd>
-              <a class="dx-link dx-mono" href={url} target="_blank" rel="noopener noreferrer">
-                {url}<Icons.icon name="external" class="dx-ico ml-1 inline size-3.5" /><span class="sr-only"> (opens in a new tab)</span>
-              </a><.copy_button
-                id={"instance-#{@instance.sname}-copy-url-#{index}"}
-                text={url}
-                label="URL"
-              />
-            </dd>
-          </div>
-        </dl>
+        <div class="dx-idetail">
+          <dl>
+            <div :if={@instance.node} class="dx-drow">
+              <dt class="dx-lbl">Node</dt>
+              <dd class="dx-mono">
+                {@instance.node}<.copy_button
+                  id={"instance-#{@instance.sname}-copy-node"}
+                  text={@instance.node}
+                  label="node name"
+                />
+              </dd>
+            </div>
+            <div :if={@instance.urls != []} class="dx-drow">
+              <dt class="dx-lbl">{if length(@instance.urls) == 1, do: "URL", else: "URLs"}</dt>
+              <dd class="flex flex-wrap gap-x-4">
+                <span
+                  :for={{url, index} <- Enum.with_index(@instance.urls)}
+                  class="inline-flex items-center"
+                >
+                  <a class="dx-link dx-mono" href={url} target="_blank" rel="noopener noreferrer">
+                    {url}<Icons.icon name="external" class="dx-ico ml-1 inline size-3.5" /><span class="sr-only"> (opens in a new tab)</span>
+                  </a><.copy_button
+                    id={"instance-#{@instance.sname}-copy-url-#{index}"}
+                    text={url}
+                    label="URL"
+                  />
+                </span>
+              </dd>
+            </div>
+            <div :if={@instance.ports != []} class="dx-drow">
+              <dt class="dx-lbl">{if length(@instance.ports) == 1, do: "Port", else: "Ports"}</dt>
+              <dd class="dx-mono">
+                {Enum.map_join(@instance.ports, " · ", &"#{&1.key} #{&1.base}")}
+              </dd>
+            </div>
+          </dl>
+          <button
+            :if={@instance.node}
+            id={"instance-#{@instance.sname}-distribution"}
+            type="button"
+            class="dx-dtoggle"
+            aria-expanded={to_string(@distribution_open)}
+            aria-controls={"instance-#{@instance.sname}-distribution-rows"}
+            phx-click="toggle-distribution"
+            phx-value-sname={@instance.sname}
+            phx-value-open={to_string(!@distribution_open)}
+          >
+            <Icons.icon
+              name="chevron-right"
+              stroke="2.2"
+              class={["dx-ico size-[13px]", @distribution_open && "rotate-90"]}
+            /> OTP distribution
+          </button>
+          <dl :if={@distribution_open} id={"instance-#{@instance.sname}-distribution-rows"}>
+            <div :if={is_nil(@distribution)} class="dx-drow">
+              <dt class="dx-lbl">Distribution</dt>
+              <dd class="dx-muted">The node did not answer.</dd>
+            </div>
+            <div :if={@distribution} class="dx-drow">
+              <dt class="dx-lbl">Distribution</dt>
+              <dd>
+                {@distribution.protocol}, {if @distribution.hidden,
+                  do: "hidden node",
+                  else: "visible node"}
+              </dd>
+            </div>
+            <div :if={@distribution} class="dx-drow">
+              <dt class="dx-lbl">Connected to</dt>
+              <dd>
+                <span :if={@distribution.groups == []} class="dx-muted">no node</span>
+                <span :for={{group, names} <- @distribution.groups} class="block">
+                  <span class="dx-muted">{group}:</span>
+                  <span class="dx-mono">{Enum.join(names, ", ")}</span>
+                </span>
+              </dd>
+            </div>
+          </dl>
+        </div>
         <p :if={@instance.limits == []} class="dx-muted col-span-3 text-[0.8125rem]">
-          No reading yet. The limits show when the watchdog gets the instance's first metrics.
+          No reading yet. The limits come from the instance's Observer Web metrics, so an app without
+          observer_web shows none.
         </p>
         <div :for={limit <- @instance.limits} class="dx-lim">
           <div class="flex items-baseline justify-between gap-2">

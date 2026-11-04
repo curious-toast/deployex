@@ -26,10 +26,15 @@ defmodule DeployexWeb.ApplicationsLive do
         do: Enum.sort_by(shown, &{-&1.severity, &1.name}),
         else: shown
 
+    # DeployEx comes first, and a filter hides it as it hides an app
+    deployex_shown =
+      assigns.deployex_row && List.first(Filter.select([assigns.deployex_row], assigns.tags))
+
     assigns =
       assign(assigns,
-        attention: View.attention(assigns.apps),
+        attention: View.attention(List.wrap(assigns.deployex_row) ++ assigns.apps),
         shown: shown,
+        deployex_shown: deployex_shown,
         hidden: length(assigns.apps) - length(shown)
       )
 
@@ -50,14 +55,17 @@ defmodule DeployexWeb.ApplicationsLive do
           only_attention={{"status", "attention"} in @tags}
         />
         <Board.host_card
-          host={View.host(@deployex, @host_info)}
+          host={View.host(@host_info)}
           pending_changes={pending_count(@yaml_config)}
           asking={@ask == :deployex}
         />
         <Board.app_table
           apps={@shown}
+          deployex={@deployex_shown}
+          distribution={@distribution}
           loaded={connected?(@socket)}
           total={length(@apps)}
+          rows={length(List.wrap(@deployex_row) ++ @apps)}
           filtered={@tags != []}
           open={@open}
           limits_open={@limits_open}
@@ -105,6 +113,7 @@ defmodule DeployexWeb.ApplicationsLive do
      |> assign_statuses(statuses)
      |> assign(:open, MapSet.new())
      |> assign(:limits_open, %{})
+     |> assign(:distribution, %{})
      |> assign(:tags, [])
      |> assign(:ask, nil)
      |> assign(:sent, MapSet.new())
@@ -140,8 +149,8 @@ defmodule DeployexWeb.ApplicationsLive do
 
       {"instance", sname}, socket ->
         socket
-        |> update(:open, &MapSet.put(&1, String.replace(sname, ~r/-[^-]+$/, "")))
-        |> update(:limits_open, &Map.put(&1, sname, true))
+        |> update(:open, &MapSet.put(&1, row_of(socket.assigns, sname)))
+        |> open_limits(sname)
 
       _tag, socket ->
         socket
@@ -195,7 +204,7 @@ defmodule DeployexWeb.ApplicationsLive do
     {:noreply,
      socket
      |> update(:open, &MapSet.put(&1, name))
-     |> update(:limits_open, &Map.put(&1, sname, true))}
+     |> open_limits(sname)}
   end
 
   def handle_event("toggle-app", %{"name" => name, "open" => "true"}, socket),
@@ -208,9 +217,20 @@ defmodule DeployexWeb.ApplicationsLive do
      end)}
   end
 
-  def handle_event("toggle-limits", %{"sname" => sname, "open" => open}, socket) do
-    {:noreply, update(socket, :limits_open, &Map.put(&1, sname, open == "true"))}
+  def handle_event("toggle-limits", %{"sname" => sname, "open" => "true"}, socket),
+    do: {:noreply, open_limits(socket, sname)}
+
+  # The distribution of an instance is read over RPC when its section opens, not with the details
+  def handle_event("toggle-distribution", %{"sname" => sname, "open" => "true"}, socket) do
+    distribution = read_distribution(socket.assigns, sname)
+    {:noreply, update(socket, :distribution, &Map.put(&1, sname, distribution))}
   end
+
+  def handle_event("toggle-distribution", %{"sname" => sname}, socket),
+    do: {:noreply, update(socket, :distribution, &Map.delete(&1, sname))}
+
+  def handle_event("toggle-limits", %{"sname" => sname}, socket),
+    do: {:noreply, update(socket, :limits_open, &Map.put(&1, sname, false))}
 
   def handle_event("ask", %{"target" => "deployex"}, socket),
     do: {:noreply, assign(socket, :ask, :deployex)}
@@ -287,9 +307,11 @@ defmodule DeployexWeb.ApplicationsLive do
   defp assign_statuses(%{assigns: assigns} = socket, statuses) do
     cleared = Map.get(assigns, :cleared, %{})
 
+    usage = View.usage(statuses)
+
     apps =
       statuses
-      |> View.apps(View.usage(statuses))
+      |> View.apps(usage)
       |> Enum.map(fn app ->
         if (Map.has_key?(cleared, app.name) and app.alert) && app.alert.kind == :ghosted,
           do: %{app | alert: nil},
@@ -298,8 +320,30 @@ defmodule DeployexWeb.ApplicationsLive do
 
     socket
     |> assign(:monitoring_apps_data, statuses)
-    |> assign(:deployex, Enum.find(statuses, &(&1.name == "deployex")))
+    |> assign(:deployex_row, View.deployex(statuses, usage))
     |> assign(:apps, apps)
+  end
+
+  defp open_limits(socket, sname), do: update(socket, :limits_open, &Map.put(&1, sname, true))
+
+  # The row that lists an instance, DeployEx or an app
+  defp row_of(assigns, sname) do
+    Enum.find_value(List.wrap(assigns.deployex_row) ++ assigns.apps, sname, fn row ->
+      Enum.any?(row.instances, &(&1.sname == sname)) && row.name
+    end)
+  end
+
+  defp read_distribution(assigns, sname) do
+    Enum.find_value(List.wrap(assigns.deployex_row) ++ assigns.apps, fn row ->
+      case Enum.find(row.instances, &(&1.sname == sname)) do
+        %{node: node} when is_binary(node) ->
+          app = if row.name == "deployex", do: nil, else: row.name
+          Instances.distribution(String.to_existing_atom(node), app)
+
+        _ ->
+          nil
+      end
+    end)
   end
 
   defp open_config_changes(%{assigns: %{yaml_config: yaml_config}} = socket),

@@ -6,22 +6,50 @@ defmodule DeployexWeb.ApplicationsLive.View do
 
   alias DeployexWeb.HostTime
   alias DeployexWeb.RecentEvents
+  alias Foundation.Certificates.PublicKey
 
-  @limit_types [{"Processes", :process}, {"Ports", :port}, {"Atoms", :atom}]
+  # Only DeployEx has the host memory, its watchdog restarts the app that uses the most of it
+  @limit_types [
+    {"Processes", :process},
+    {"Ports", :port},
+    {"Atoms", :atom},
+    {"Host memory", :memory}
+  ]
   @tls_warn_days 30
 
   @doc """
-  The This host card: the system, its uptime, and the DeployEx and OTP versions.
+  The This host card: the system and its uptime. The DeployEx row shows the DeployEx and OTP versions.
   """
-  @spec host(Deployer.Status.t() | nil, Host.Info.t() | nil) :: map()
-  def host(deployex, host_info) do
-    %{
-      system: system(host_info),
-      icon: system_icon(host_info),
-      up: up(host_info),
-      version: deployex && deployex.version,
-      otp: :erlang.system_info(:otp_release) |> to_string()
-    }
+  @spec host(Host.Info.t() | nil) :: map()
+  def host(host_info) do
+    %{system: system(host_info), icon: system_icon(host_info), up: up(host_info)}
+  end
+
+  @doc """
+  The DeployEx row, first in the list: its limits against the watchdog's thresholds, its CPU and memory,
+  its certificate and its node. Nil while the statuses have no DeployEx.
+  """
+  @spec deployex([Deployer.Status.t()], map(), DateTime.t()) :: map() | nil
+  def deployex(statuses, usage, now \\ DateTime.utc_now()) do
+    case Enum.find(statuses, &(&1.name == "deployex")) do
+      nil ->
+        nil
+
+      status ->
+        # Its OTP status says whether it reaches another node, which is no problem of its own
+        child = %{status | language: "elixir", otp: nil}
+        status = %{status | children: [child], replicas: 1, config: nil, language: "elixir"}
+        row = app(status, %{status.node => Map.get(usage, :deployex, %{})}, now)
+
+        %{
+          row
+          | language: "deployex",
+            language_name: "DeployEx",
+            restarts: nil,
+            config_line: nil,
+            instances: Enum.map(row.instances, &%{&1 | restarts: nil})
+        }
+    end
   end
 
   @doc """
@@ -39,9 +67,12 @@ defmodule DeployexWeb.ApplicationsLive.View do
   @doc """
   The Watchdog's samples and config for the node of each instance in the statuses.
   """
-  @spec usage([Deployer.Status.t()]) :: %{node() => map()}
+  @spec usage([Deployer.Status.t()]) :: %{(node() | :deployex) => map()}
   def usage(statuses) do
-    for %{children: children} <- statuses, %{node: node} <- children, node, into: %{} do
+    for %{children: children} <- statuses,
+        %{node: node} <- children,
+        node,
+        into: %{deployex: Sentinel.Watchdog.usage(:deployex)} do
       {node, Sentinel.Watchdog.usage(node)}
     end
   end
@@ -70,6 +101,7 @@ defmodule DeployexWeb.ApplicationsLive.View do
 
     tls = tls(status, @tls_warn_days)
     crashes = recent_crashes(instances, now)
+    unreachable = for %{running: true, otp: :not_connected} = instance <- instances, do: instance
 
     problems =
       Enum.map(tls, & &1.text) ++
@@ -78,6 +110,7 @@ defmodule DeployexWeb.ApplicationsLive.View do
           warning <- instance.warnings,
           do: "#{instance.sname} #{warning}"
         ) ++
+        Enum.map(unreachable, &"#{&1.sname} runs, but DeployEx cannot connect to it over OTP") ++
         crashes
 
     ghosted = ghosted(status, instances)
@@ -100,29 +133,28 @@ defmodule DeployexWeb.ApplicationsLive.View do
       restarts: restarts(status.children, now),
       deploy: deploy(status, ghosted, now),
       alert: alert,
-      urgent: urgent(tls, instances),
-      severity: severity(alert, instances, tls, crashes),
+      urgent: urgent(tls, instances, unreachable),
+      severity: severity(alert, instances, tls, crashes ++ unreachable),
       notes: notes(status, instances),
+      config_line: config_line(status),
+      certificates: certificates(status),
       instances: instances
     }
   end
 
   defp instance(child, language, usage, now) do
-    resources = child.resources
     limits = limits(usage)
     warnings = Enum.flat_map(limits, & &1.warning)
 
-    %{
+    child.resources
+    |> resources()
+    |> Map.merge(%{
       sname: child.sname,
       node: child.node && to_string(child.node),
       version: child.version,
       status: instance_status(child.status),
-      cpu_value: resources && resources.cpu,
-      cores: resources && resources.cores,
-      memory_value: resources && resources.memory,
-      cpu: cpu_text(resources && resources.cpu),
-      cpu_tip: cpu_tip(resources && resources.cpu, resources && resources.cores),
-      memory: if(resources && resources.memory, do: bytes(resources.memory), else: "--"),
+      running: running?(child),
+      otp: child.otp,
       restarts: restarts([child], now),
       ports: Enum.map(List.wrap(child.ports), &Map.take(&1, [:key, :base])),
       urls: List.wrap(child.urls),
@@ -134,24 +166,41 @@ defmodule DeployexWeb.ApplicationsLive.View do
       last_crash_at: child.last_crash_at,
       deployed_at: child.deployed_at,
       age: age(child.deployed_at, now)
+    })
+  end
+
+  # The CPU and memory of an instance, the values for the app's sums and the texts
+  defp resources(nil),
+    do: %{cpu_value: nil, cores: nil, memory_value: nil, cpu: "--", cpu_tip: nil, memory: "--"}
+
+  defp resources(resources) do
+    %{
+      cpu_value: resources.cpu,
+      cores: resources.cores,
+      memory_value: resources.memory,
+      cpu: cpu_text(resources.cpu),
+      cpu_tip: cpu_tip(resources.cpu, resources.cores),
+      memory: if(resources.memory, do: bytes(resources.memory), else: "--")
     }
   end
 
   defp limits(usage) do
     for {name, type} <- @limit_types, {:ok, {data, config}} <- [Map.fetch(usage, type)] do
-      limit_row(name, data, config)
+      limit_row(name, type, data, config)
     end
   end
 
   # The percent and the level use the Watchdog's sample, ratio and thresholds, so the page shows what it checks
-  defp limit_row(name, %{current: count, limit: limit}, config) do
+  defp limit_row(name, type, %{current: count, limit: limit}, config) do
     percent = trunc(count / limit * 100)
     level = level(percent, config)
+    amount = if type == :memory, do: &bytes/1, else: &number/1
 
     %{
       name: name,
-      count: number(count),
-      limit: number(limit),
+      type: type,
+      count: amount.(count),
+      limit: amount.(limit),
       percent: percent,
       percent_text: if(count > 0 and percent < 1, do: "<1%", else: "#{percent}%"),
       level: level,
@@ -161,16 +210,19 @@ defmodule DeployexWeb.ApplicationsLive.View do
     }
   end
 
+  # A type the watchdog does not watch gets no level, as nothing acts on it
+  defp level(_percent, %{enabled: false}), do: 0
   defp level(percent, %{restart_threshold_percent: restart}) when percent >= restart, do: 2
   defp level(percent, %{warning_threshold_percent: warning}) when percent >= warning, do: 1
   defp level(_percent, _config), do: 0
 
   defp watch_text(%{enabled: false}), do: nil
 
-  defp watch_text(%{enable_restart: true, restart_threshold_percent: restart}),
-    do: "restarts at #{restart}%"
+  defp watch_text(%{enable_restart: true} = config),
+    do:
+      "warns at #{config.warning_threshold_percent}%, restarts at #{config.restart_threshold_percent}%"
 
-  defp watch_text(_config), do: "restart off"
+  defp watch_text(config), do: "warns at #{config.warning_threshold_percent}%, restart off"
 
   defp limit_warning(name, percent, level) when level > 0,
     do: ["#{name} at #{percent}% of the limit"]
@@ -294,9 +346,9 @@ defmodule DeployexWeb.ApplicationsLive.View do
   def running?(%{status: :pre_commands, otp: :connected}), do: true
   def running?(_child), do: false
 
-  # The problems at severity 3 show under the row, so they need no open app: a TLS certificate within 7 days
-  # and an instance at its restart threshold
-  defp urgent(tls, instances) do
+  # The problems that show under the row, so they need no open app: a TLS certificate within 7 days, an
+  # instance at its restart threshold, and a running instance that DeployEx cannot reach over OTP
+  defp urgent(tls, instances, unreachable) do
     certificates =
       for %{tone: :error, text: text} <- tls do
         %{
@@ -318,27 +370,40 @@ defmodule DeployexWeb.ApplicationsLive.View do
         }
       end
 
-    certificates ++ limits
+    otp =
+      for instance <- unreachable do
+        %{
+          kind: :otp,
+          title: "#{instance.sname} runs, but DeployEx cannot connect to it over OTP",
+          detail:
+            "Check the cookie and the TLS distribution settings. Until then the watchdog cannot watch it, " <>
+              "and the shell and hot upgrades do not work.",
+          sname: instance.sname
+        }
+      end
+
+    certificates ++ limits ++ otp
   end
+
+  defp limit_detail(%{type: :memory, restart_at: restart}) when is_integer(restart),
+    do: "The watchdog restarts the app that uses the most memory at #{restart}%."
 
   defp limit_detail(%{restart_at: restart}) when is_integer(restart),
     do: "The watchdog restarts the instance at #{restart}%."
 
-  defp limit_detail(%{watch: "restart off"}),
+  defp limit_detail(_limit),
     do: "Restart is off for this limit, so nothing stops the instance at the limit."
 
-  defp limit_detail(_limit),
-    do: "DeployEx does not watch this limit, so nothing stops the instance at the limit."
-
   # How bad an app's state is, for the attention list: 4 down, 3 at a restart threshold or a TLS
-  # certificate within 7 days, 2 a failed version, a crash or a limit warning, 1 the rest, 0 nothing
-  defp severity(alert, instances, tls, crashes) do
+  # certificate within 7 days, 2 a failed version, a crash, no OTP connection or a limit warning, 1 the
+  # rest, 0 nothing
+  defp severity(alert, instances, tls, failures) do
     levels = for instance <- instances, limit <- instance.limits, do: limit.level
 
     cond do
       match?(%{blocking: true}, alert) -> 4
       near_restart?(levels, tls) -> 3
-      failing?(alert, crashes, levels) -> 2
+      failing?(alert, failures, levels) -> 2
       any_problem?(alert, tls, instances) -> 1
       true -> 0
     end
@@ -346,9 +411,9 @@ defmodule DeployexWeb.ApplicationsLive.View do
 
   defp near_restart?(levels, tls), do: 2 in levels or Enum.any?(tls, &(&1.tone == :error))
 
-  defp failing?(alert, crashes, levels),
+  defp failing?(alert, failures, levels),
     do:
-      match?(%{tone: :error}, alert) or match?(%{kind: :ghosted}, alert) or crashes != [] or
+      match?(%{tone: :error}, alert) or match?(%{kind: :ghosted}, alert) or failures != [] or
         1 in levels
 
   defp any_problem?(nil, [], instances), do: Enum.any?(instances, &(&1.warnings != []))
@@ -356,8 +421,7 @@ defmodule DeployexWeb.ApplicationsLive.View do
 
   # The TLS certificates of the app that expire within the given days
   defp tls(status, within) do
-    for %{expires_in_days: days} <-
-          status.children |> Enum.flat_map(&(&1.certificates || [])) |> Enum.uniq(),
+    for %{expires_in_days: days} <- status.certificates |> List.wrap() |> Enum.uniq(),
         is_integer(days) and days <= within do
       %{
         tone: if(days <= 7, do: :error, else: :warning),
@@ -392,6 +456,49 @@ defmodule DeployexWeb.ApplicationsLive.View do
 
     Enum.uniq(tls) ++ near ++ crashes
   end
+
+  # The app's config in one line, like 2 replicas · rollback timeout 10 minutes · checks every 5 seconds
+  defp config_line(%{config: nil}), do: nil
+
+  defp config_line(status) do
+    [
+      count(status.replicas, "replica"),
+      status.deploy_rollback_timeout_ms > 0 &&
+        "rollback timeout #{duration(status.deploy_rollback_timeout_ms)}",
+      status.deploy_schedule_interval_ms > 0 &&
+        "checks every #{duration(status.deploy_schedule_interval_ms)}",
+      mode(status.config)
+    ]
+    |> Enum.filter(&is_binary/1)
+    |> Enum.join(" · ")
+  end
+
+  defp mode(%{mode: :manual, manual_version: %{version: version}}),
+    do: "manual, pinned #{version}"
+
+  defp mode(%{mode: :manual}), do: "manual"
+  defp mode(_config), do: "automatic"
+
+  # The app's TLS certificates: the domains, when each expires, and the issuer
+  defp certificates(status) do
+    for %PublicKey{expires_in_days: days} = certificate <- List.wrap(status.certificates) do
+      %{
+        domains: certificate.domains |> List.wrap() |> Enum.join(", "),
+        expires: expires(days),
+        tone: expiry_tone(days),
+        issuer: certificate.issuer
+      }
+    end
+  end
+
+  defp expires(days) when is_integer(days) and days < 0, do: "expired #{count(-days, "day")} ago"
+  defp expires(0), do: "expires today"
+  defp expires(days) when is_integer(days), do: "expires in #{count(days, "day")}"
+  defp expires(_days), do: "no expiry date"
+
+  defp expiry_tone(days) when is_integer(days) and days <= 7, do: :error
+  defp expiry_tone(days) when is_integer(days) and days <= @tls_warn_days, do: :warning
+  defp expiry_tone(_days), do: :muted
 
   defp app_status(running, total, children) do
     cond do

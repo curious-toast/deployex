@@ -14,6 +14,15 @@ defmodule DeployexWeb.Applications.IndexTest do
     :log_in_default_user
   ]
 
+  # An instance's details read its OTP distribution, which a test node does not answer
+  setup do
+    stub(Foundation.RpcMock, :call, fn _node, _module, _function, _args, _timeout ->
+      {:badrpc, :nodedown}
+    end)
+
+    :ok
+  end
+
   @ghosted_config %{
     last_ghosted_version: "4.6.0",
     last_ghosted_at: ~U[2026-10-28 14:20:00Z],
@@ -66,7 +75,7 @@ defmodule DeployexWeb.Applications.IndexTest do
     assert html =~ "Applications"
     assert html =~ "DeployEx"
     assert html =~ "1.2.3"
-    assert html =~ "on OTP #{System.otp_release()}"
+    assert has_element?(view, "#app-deployex", "1.2.3")
     assert html =~ "myphoenixapp"
     assert html =~ "4.5.6 · OTP 27 · Elixir 1.20"
     assert html =~ "1/1 running"
@@ -97,7 +106,7 @@ defmodule DeployexWeb.Applications.IndexTest do
 
     html = view |> element("#instance-myphoenixapp-abc123-limits") |> render_click()
     assert html =~ "212,377 of 262,144"
-    assert html =~ ~r/>PORT<\/dt>\s*<dd class="dx-mono">5678</
+    assert html =~ ~r/>Port<\/dt>\s*<dd class="dx-mono">\s*PORT 5678\s*</
     assert html =~ ~s(href="http://localhost:5678")
     assert html =~ ~s(data-copy="http://localhost:5678")
     assert html =~ ~r/data-copy="myphoenixapp-abc123@[^"]+"/
@@ -130,7 +139,8 @@ defmodule DeployexWeb.Applications.IndexTest do
     assert html =~ ~r/id="apps-attention"[^>]*aria-pressed="true"/
     assert html =~ "status: needs attention"
     refute has_element?(view, "#app-calmapp")
-    assert html =~ "1 of 2 apps match."
+    # DeployEx counts as a row of the list
+    assert html =~ "1 of 3 apps match."
 
     view |> element("#apps-show-all") |> render_click()
     assert_patch(view, ~p"/applications")
@@ -195,7 +205,7 @@ defmodule DeployexWeb.Applications.IndexTest do
     {:ok, view, html} = live(conn, ~p"/applications?filter=runtime:erlang,runtime:gleam")
     assert has_element?(view, "#app-calmapp")
     refute has_element?(view, "#app-myphoenixapp")
-    assert html =~ "1 of 2 apps match."
+    assert html =~ "1 of 3 apps match."
 
     stub_monitoring(apps)
     {:ok, _view, html} = live(conn, ~p"/applications?filter=runtime:gleam")
@@ -246,6 +256,94 @@ defmodule DeployexWeb.Applications.IndexTest do
 
     send(view.pid, {:clear_shown, "myerlangapp"})
     assert render(view) =~ "4.6.0 failed and is ghosted"
+  end
+
+  @tag :capture_log
+  test "DeployEx comes first and opens like an app, and an app filter hides it", %{conn: conn} do
+    stub_monitoring([FixtureStatus.application(%{name: "myphoenixapp"})])
+
+    {:ok, view, html} = live(conn, ~p"/applications")
+    {deployex, _} = :binary.match(html, ~s(id="app-deployex"))
+    {app, _} = :binary.match(html, ~s(id="app-myphoenixapp"))
+    assert deployex < app
+
+    html = view |> element("#app-deployex-toggle") |> render_click()
+    assert html =~ ~s(id="instance-deployex")
+    refute has_element?(view, "#instance-deployex-restart")
+    refute html =~ "Restart all…"
+    assert has_element?(view, "#app-deployex-config", "issued by")
+
+    stub_monitoring([FixtureStatus.application(%{name: "myphoenixapp"})])
+    {:ok, view, _html} = live(conn, ~p"/applications?filter=app:myphoenixapp")
+    refute has_element?(view, "#app-deployex")
+    assert has_element?(view, "#app-myphoenixapp")
+
+    stub_monitoring([FixtureStatus.application(%{name: "myphoenixapp"})])
+    {:ok, view, html} = live(conn, ~p"/applications?filter=app:deployex")
+    assert has_element?(view, "#app-deployex")
+    assert html =~ "1 of 2 apps match."
+  end
+
+  @tag :capture_log
+  test "an instance's OTP distribution opens under its details, with the nodes it is connected to",
+       %{
+         conn: conn
+       } do
+    node = FixtureStatus.node("myphoenixapp-abc123")
+
+    stub(Foundation.RpcMock, :call, fn
+      ^node, :init, :get_arguments, [], _timeout ->
+        [proto_dist: [[~c"inet_tls"]]]
+
+      ^node, :erlang, :nodes, _args, _timeout ->
+        [{Node.self(), %{node_type: :visible}}]
+    end)
+
+    stub_monitoring([FixtureStatus.application(%{name: "myphoenixapp"})])
+    {:ok, view, _html} = live(conn, ~p"/applications?app=myphoenixapp")
+
+    html = view |> element("#instance-myphoenixapp-abc123-limits") |> render_click()
+    refute html =~ "TLS, visible node"
+
+    html = view |> element("#instance-myphoenixapp-abc123-distribution") |> render_click()
+    assert html =~ "TLS, visible node"
+    assert html =~ ~r/DeployEx:<\/span>\s*<span class="dx-mono">/
+
+    html = view |> element("#instance-myphoenixapp-abc123-distribution") |> render_click()
+    refute html =~ "TLS, visible node"
+  end
+
+  @tag :capture_log
+  test "an instance's details read no distribution until its section opens", %{conn: conn} do
+    test_pid = self()
+
+    stub(Foundation.RpcMock, :call, fn _node, :init, :get_arguments, [], _timeout ->
+      send(test_pid, :distribution_read)
+      {:badrpc, :nodedown}
+    end)
+
+    stub_monitoring([FixtureStatus.application(%{name: "myphoenixapp"})])
+    {:ok, view, _html} = live(conn, ~p"/applications?filter=instance:myphoenixapp-abc123")
+    render_patch(view, ~p"/applications?filter=instance:myphoenixapp-abc123,runtime:elixir")
+    refute_received :distribution_read
+
+    html = view |> element("#instance-myphoenixapp-abc123-distribution") |> render_click()
+    assert_received :distribution_read
+    assert html =~ "The node did not answer."
+  end
+
+  @tag :capture_log
+  test "a running instance that DeployEx cannot reach shows under the row, and opens", %{
+    conn: conn
+  } do
+    stub_monitoring([FixtureStatus.application(%{name: "myphoenixapp", otp: :not_connected})])
+
+    {:ok, view, html} = live(conn, ~p"/applications")
+    assert html =~ "myphoenixapp-abc123 runs, but DeployEx cannot connect to it over OTP"
+    assert html =~ "Check the cookie and the TLS distribution settings."
+
+    view |> element("#app-myphoenixapp-urgent-0 button", "Show instance") |> render_click()
+    assert has_element?(view, ~s(#instance-myphoenixapp-abc123-limits[aria-expanded="true"]))
   end
 
   @tag :capture_log

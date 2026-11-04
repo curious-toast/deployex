@@ -28,17 +28,22 @@ defmodule Deployer.ResourcesTest do
     |> stub(:state, fn ^sname -> %Deployer.Monitor{sname: sname, status: status} end)
   end
 
-  # Answers the RPCs as an instance with this runtime counter
+  # Answers the RPCs as an instance with this runtime counter, and as DeployEx, which samples itself too
   defp stub_node(node, runtime_ms) do
     Foundation.RpcMock
     |> stub(:multicall, fn
-      [^node], :erlang, :statistics, [:runtime], _timeout -> [{:ok, {runtime_ms.(), 0}}]
-      [^node], :os, :getpid, [], _timeout -> [{:ok, ~c"4242"}]
+      nodes, :erlang, :statistics, [:runtime], _timeout ->
+        Enum.map(nodes, &if(&1 == node, do: {:ok, {runtime_ms.(), 0}}, else: {:ok, {0, 0}}))
+
+      nodes, :os, :getpid, [], _timeout ->
+        Enum.map(nodes, &if(&1 == node, do: {:ok, ~c"4242"}, else: {:ok, ~c"1111"}))
     end)
   end
 
   defp stub_ps(output) do
-    stub(Host.CommanderMock, :run, fn "ps -o pid=,rss= -p 4242", [:sync, :stdout] -> output end)
+    stub(Host.CommanderMock, :run, fn "ps -o pid=,rss= -p " <> _pids, [:sync, :stdout] ->
+      output
+    end)
   end
 
   test "samples the memory of a running instance", %{name: name, sname: sname, node: node} do
@@ -58,12 +63,12 @@ defmodule Deployer.ResourcesTest do
     stub_running(sname)
 
     stub(Foundation.RpcMock, :multicall, fn
-      [^node], :erlang, :statistics, [:runtime], _timeout ->
-        [{:ok, {1_000, 0}}]
+      nodes, :erlang, :statistics, [:runtime], _timeout ->
+        Enum.map(nodes, fn _node -> {:ok, {1_000, 0}} end)
 
-      [^node], :os, :getpid, [], _timeout ->
-        send(test_pid, :getpid)
-        [{:ok, ~c"4242"}]
+      nodes, :os, :getpid, [], _timeout ->
+        if node in nodes, do: send(test_pid, :getpid)
+        Enum.map(nodes, &if(&1 == node, do: {:ok, ~c"4242"}, else: {:ok, ~c"1111"}))
     end)
 
     stub_ps({:ok, [stdout: ["4242 1024\n"]]})
@@ -146,8 +151,8 @@ defmodule Deployer.ResourcesTest do
     :ok = sample(name)
     assert %Resources{} = Server.get(sname, name)
 
-    stub(Foundation.RpcMock, :multicall, fn [_node], _module, _function, _args, _timeout ->
-      [{:error, {:erpc, :timeout}}]
+    stub(Foundation.RpcMock, :multicall, fn nodes, _module, _function, _args, _timeout ->
+      Enum.map(nodes, fn _node -> {:error, {:erpc, :timeout}} end)
     end)
 
     send(Process.whereis(name), :sample)
@@ -156,13 +161,19 @@ defmodule Deployer.ResourcesTest do
     assert Server.get(sname, name) == nil
   end
 
-  test "skips an instance that is not running", %{name: name, sname: sname} do
+  test "skips an instance that is not running, and samples DeployEx itself", %{
+    name: name,
+    sname: sname
+  } do
     stub_running(sname, :starting)
+    stub_node(:none, fn -> 0 end)
+    stub_ps({:ok, [stdout: ["1111 2048\n"]]})
     start_server(name)
 
     :ok = sample(name)
 
     assert Server.get(sname, name) == nil
+    assert %Resources{sname: "deployex", memory: 2_097_152} = Server.get("deployex", name)
   end
 
   test "a node that does not answer delays no other node", %{name: name, sname: sname, node: node} do
@@ -173,14 +184,15 @@ defmodule Deployer.ResourcesTest do
     |> stub(:list, fn -> [sname, other] end)
     |> stub(:state, fn sname -> %Deployer.Monitor{sname: sname, status: :running} end)
 
-    # One call for both nodes, and only the node that answered is asked for its OS pid
+    # One call for every node, and only the nodes that answered are asked for their OS pid
     expect(Foundation.RpcMock, :multicall, fn nodes, :erlang, :statistics, [:runtime], _timeout ->
-      assert Enum.sort(nodes) == Enum.sort([node, other_node])
-      Enum.map(nodes, &if(&1 == node, do: {:ok, {1_000, 0}}, else: {:error, {:erpc, :timeout}}))
+      assert Enum.sort(nodes) == Enum.sort([Node.self(), node, other_node])
+      Enum.map(nodes, &if(&1 == other_node, do: {:error, {:erpc, :timeout}}, else: {:ok, {0, 0}}))
     end)
 
-    expect(Foundation.RpcMock, :multicall, fn [^node], :os, :getpid, [], _timeout ->
-      [{:ok, ~c"4242"}]
+    expect(Foundation.RpcMock, :multicall, fn nodes, :os, :getpid, [], _timeout ->
+      assert Enum.sort(nodes) == Enum.sort([Node.self(), node])
+      Enum.map(nodes, &if(&1 == node, do: {:ok, ~c"4242"}, else: {:ok, ~c"1111"}))
     end)
 
     stub_ps({:ok, [stdout: ["4242 1024\n"]]})

@@ -22,6 +22,7 @@ defmodule DeployexWeb.ApplicationsLive.ViewTest do
         name: "myapp",
         sname: sname,
         node: :"#{sname}@host",
+        otp: :connected,
         version: "1.0.0",
         status: :running,
         last_deployment: :full_deployment,
@@ -166,15 +167,14 @@ defmodule DeployexWeb.ApplicationsLive.ViewTest do
       })
 
     children = [
-      child(%{
-        certificates: [%PublicKey{expires_in_days: 5}],
-        last_crash_at: ~U[2026-10-28 14:31:00Z]
-      }),
-      child(%{sname: "myapp-def", certificates: [%PublicKey{expires_in_days: 20}]})
+      child(%{last_crash_at: ~U[2026-10-28 14:31:00Z]}),
+      child(%{sname: "myapp-def"})
     ]
 
+    certificates = [%PublicKey{expires_in_days: 5}, %PublicKey{expires_in_days: 20}]
+
     assert [%{notes: notes, instances: [first | _], problems: problems}] =
-             View.apps([app(children)], usage, @now)
+             View.apps([app(children, %{certificates: certificates})], usage, @now)
 
     assert %{tone: :error, text: "TLS certificate expires in 5 days"} in notes
     assert %{tone: :warning, text: "TLS certificate expires in 20 days"} in notes
@@ -287,10 +287,16 @@ defmodule DeployexWeb.ApplicationsLive.ViewTest do
     assert [%{instances: [%{limits: [process, port, atom], warnings: warnings}]}] =
              View.apps([app([child(%{})])], usage, @now)
 
-    assert %{level: 1, restart_at: 65, watch: "restarts at 65%"} = process
-    assert %{level: 1, restart_at: false, watch: "restart off"} = port
+    assert %{level: 1, restart_at: 65, watch: "warns at 50%, restarts at 65%"} = process
+    assert %{level: 1, restart_at: false, watch: "warns at 60%, restart off"} = port
     assert %{level: 0, restart_at: false, watch: nil} = atom
     assert warnings == ["processes at 60% of the limit", "ports at 70% of the limit"]
+
+    # Nothing acts on a type the watchdog does not watch, so it gets no level, even near its limit
+    near = usage(%{atom: watched(950, 1_000, %{enabled: false})})
+
+    assert [%{urgent: [], instances: [%{limits: [%{level: 0}], warnings: []}]}] =
+             View.apps([app([child(%{})])], near, @now)
   end
 
   test "an instance with no sample from the Watchdog shows no limits" do
@@ -351,11 +357,11 @@ defmodule DeployexWeb.ApplicationsLive.ViewTest do
            ) == 4
 
     assert severity(app([child(%{})]), at_restart) == 3
-    assert severity(app([child(%{certificates: [%PublicKey{expires_in_days: 5}]})])) == 3
+    assert severity(app([child(%{})], %{certificates: [%PublicKey{expires_in_days: 5}]})) == 3
     assert severity(app([child(%{deployed_at: deployed})], %{config: ghosted})) == 2
     assert severity(app([child(%{last_crash_at: ~U[2026-10-28 15:40:00Z]})])) == 2
     assert severity(app([child(%{})]), warning) == 2
-    assert severity(app([child(%{certificates: [%PublicKey{expires_in_days: 20}]})])) == 1
+    assert severity(app([child(%{})], %{certificates: [%PublicKey{expires_in_days: 20}]})) == 1
     assert severity(app([child(%{status: :pre_commands})])) == 1
     assert severity(app([child(%{})])) == 0
 
@@ -406,12 +412,12 @@ defmodule DeployexWeb.ApplicationsLive.ViewTest do
   test "a TLS certificate within 7 days and an instance at its restart threshold are urgent" do
     at_restart = usage(%{process: watched(95, 100)})
 
-    children = [
-      child(%{certificates: [%PublicKey{expires_in_days: 5}]}),
-      child(%{sname: "myapp-def", certificates: [%PublicKey{expires_in_days: 20}]})
-    ]
+    children = [child(%{}), child(%{sname: "myapp-def"})]
+    certificates = [%PublicKey{expires_in_days: 5}, %PublicKey{expires_in_days: 20}]
 
-    assert [%{urgent: [tls, limit]}] = View.apps([app(children)], at_restart, @now)
+    assert [%{urgent: [tls, limit]}] =
+             View.apps([app(children, %{certificates: certificates})], at_restart, @now)
+
     assert %{kind: :tls, title: "TLS certificate expires in 5 days"} = tls
 
     assert %{
@@ -427,6 +433,116 @@ defmodule DeployexWeb.ApplicationsLive.ViewTest do
              View.apps([app([child(%{})])], off, @now)
 
     assert [%{urgent: []}] = View.apps([app([child(%{})])], %{}, @now)
+  end
+
+  test "the open app shows its config in one line, and its certificates" do
+    status =
+      app([child(%{}), child(%{sname: "myapp-def"})], %{
+        replicas: 2,
+        deploy_rollback_timeout_ms: 600_000,
+        deploy_schedule_interval_ms: 5_000,
+        certificates: [
+          %PublicKey{domains: ["myapp.com", "www.myapp.com"], expires_in_days: 54, issuer: "R3"}
+        ]
+      })
+
+    assert [%{config_line: line, certificates: [certificate]}] = View.apps([status], %{}, @now)
+    assert line == "2 replicas · rollback timeout 10 minutes · checks every 5 seconds · automatic"
+
+    assert certificate == %{
+             domains: "myapp.com, www.myapp.com",
+             expires: "expires in 54 days",
+             tone: :muted,
+             issuer: "R3"
+           }
+
+    pinned = %{
+      status
+      | config: %{status.config | mode: :manual, manual_version: %{version: "1.4.1"}}
+    }
+
+    assert [%{config_line: line}] = View.apps([pinned], %{}, @now)
+    assert String.ends_with?(line, " · manual, pinned 1.4.1")
+
+    expired = %{status | certificates: [%PublicKey{expires_in_days: -3}]}
+
+    assert [%{certificates: [%{expires: "expired 3 days ago", tone: :error}]}] =
+             View.apps([expired], %{}, @now)
+  end
+
+  test "a running instance that DeployEx cannot reach over OTP is a problem under the row" do
+    unreachable = child(%{otp: :not_connected})
+
+    assert [
+             %{
+               problems: [problem],
+               urgent: [urgent],
+               severity: 2,
+               instances: [%{otp: :not_connected}]
+             }
+           ] =
+             View.apps([app([unreachable])], %{}, @now)
+
+    assert problem == "myapp-abc runs, but DeployEx cannot connect to it over OTP"
+    assert %{kind: :otp, sname: "myapp-abc", detail: "Check the cookie and the TLS" <> _} = urgent
+
+    # A stopped instance is not connected either, and that is no OTP problem
+    assert [%{urgent: []}] =
+             View.apps([app([child(%{otp: :not_connected, status: :idle})])], %{}, @now)
+  end
+
+  test "DeployEx has its own row, with its limits, the host memory and its certificate" do
+    deployex = %Status{
+      name: "deployex",
+      sname: "deployex",
+      node: :deployex@host,
+      version: "0.10.0",
+      status: :running,
+      otp: :not_connected,
+      otp_version: "29",
+      elixir_version: "1.20.4",
+      uptime: "3h ago",
+      resources: %Resources{cpu: 0.4, cores: 10, memory: 209_715_200},
+      certificates: [%PublicKey{domains: ["deployex"], expires_in_days: 5}]
+    }
+
+    usage = %{
+      deployex: %{
+        process: watched(950, 1_000),
+        memory: watched(60_000_000_000, 64_000_000_000)
+      }
+    }
+
+    assert View.deployex([], usage, @now) == nil
+
+    row = View.deployex([deployex, app([child(%{})])], usage, @now)
+
+    assert %{
+             name: "deployex",
+             language: "deployex",
+             sub: "0.10.0 · OTP 29 · Elixir 1.20.4",
+             cpu: "0.4%",
+             memory: "200 MB",
+             restarts: nil,
+             config_line: nil,
+             certificates: [%{domains: "deployex", tone: :error}],
+             instances: [%{sname: "deployex", restarts: nil, otp: nil, limits: [process, memory]}]
+           } = row
+
+    assert %{name: "Processes", level: 2} = process
+    assert %{name: "Host memory", count: "55.9 GB", limit: "59.6 GB", level: 2} = memory
+
+    # Its OTP status is no problem of its own, the limits and the certificate are
+    assert [
+             %{kind: :tls},
+             %{kind: :limit, title: "deployex processes at 95% of the limit"},
+             %{
+               kind: :limit,
+               detail: "The watchdog restarts the app that uses the most memory at 90%."
+             }
+           ] = row.urgent
+
+    assert View.attention?(row)
   end
 
   test "a duration reads in its largest whole unit" do
@@ -448,15 +564,12 @@ defmodule DeployexWeb.ApplicationsLive.ViewTest do
 
   test "the host card shows the system with its architecture, and -- with no reading" do
     assert %{system: "macOS 15.7.4 · " <> _, icon: "macos", up: "3 days"} =
-             View.host(nil, %Host.Info{host: "macOS", description: "15.7.4", uptime: "3 days"})
+             View.host(%Host.Info{host: "macOS", description: "15.7.4", uptime: "3 days"})
 
     assert %{system: "Ubuntu 24.04 · " <> _, icon: "linux"} =
-             View.host(%Status{version: "0.10.0"}, %Host.Info{
-               host: "Linux",
-               description: "Ubuntu 24.04"
-             })
+             View.host(%Host.Info{host: "Linux", description: "Ubuntu 24.04"})
 
-    assert %{system: "--", up: "--", icon: "linux"} = View.host(nil, nil)
+    assert %{system: "--", up: "--", icon: "linux"} = View.host(nil)
   end
 
   test "bytes and ages read as short text" do
