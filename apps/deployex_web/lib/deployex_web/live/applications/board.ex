@@ -201,20 +201,22 @@ defmodule DeployexWeb.ApplicationsLive.Board do
             </p>
             <div class="flex flex-wrap items-center justify-center gap-2">
               <span class="dx-muted text-[0.8125rem]">How to build and add an app:</span>
-              <.link
+              <a
                 :for={
-                  {label, page} <- [
-                    {"Elixir", "guide-local-elixir"},
-                    {"Erlang", "guide-local-erlang"},
-                    {"Gleam", "guide-local-gleam"}
+                  {label, guide} <- [
+                    {"Elixir", "local-elixir"},
+                    {"Erlang", "local-erlang"},
+                    {"Gleam", "local-gleam"},
+                    {"YAML reference", "yaml"}
                   ]
                 }
                 class="dx-btn"
-                navigate={~p"/documentation?#{%{page: "#{page}.html"}}"}
+                href={guide_url(guide)}
+                target="_blank"
+                rel="noopener noreferrer"
               >
-                {label}
-              </.link>
-              <.link class="dx-btn" navigate={~p"/documentation?#{%{page: "guide-yaml.html"}}"}>YAML reference</.link>
+                {label}<span class="sr-only"> (opens in a new tab)</span>
+              </a>
             </div>
           </div>
           <.app_row
@@ -818,6 +820,13 @@ defmodule DeployexWeb.ApplicationsLive.Board do
       </span>
     </span>
     """
+  end
+
+  # The guides of the running version on GitHub. A pre-release has no tag, so its links go to main
+  defp guide_url(guide) do
+    version = to_string(Application.spec(:deployex_web, :vsn))
+    ref = if String.contains?(version, "-"), do: "main", else: version
+    "https://github.com/deployex/deployex/blob/#{ref}/guides/docs/#{guide}/README.md"
   end
 
   defp problems([_problem]), do: "1 problem"

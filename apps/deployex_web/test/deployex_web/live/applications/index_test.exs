@@ -317,8 +317,10 @@ defmodule DeployexWeb.Applications.IndexTest do
 
     {:ok, view, html} = live(conn, ~p"/applications")
     assert html =~ "No applications on this host"
-    assert html =~ ~s(href="/documentation?page=guide-local-elixir.html")
-    assert html =~ ~s(href="/documentation?page=guide-yaml.html")
+    version = Application.spec(:deployex_web, :vsn)
+    guides = "https://github.com/deployex/deployex/blob/#{version}/guides/docs"
+    assert html =~ ~s(href="#{guides}/local-elixir/README.md")
+    assert html =~ ~s(href="#{guides}/yaml/README.md")
 
     html = view |> element("#host-restart") |> render_click()
     assert html =~ "Restart DeployEx?"
