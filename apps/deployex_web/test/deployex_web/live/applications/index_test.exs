@@ -5,7 +5,6 @@ defmodule DeployexWeb.Applications.IndexTest do
   import Mox
 
   alias Deployer.Resources
-  alias Deployer.Resources.Limit
   alias DeployexWeb.Fixture.Status, as: FixtureStatus
   alias DeployexWeb.HostTime
 
@@ -23,23 +22,16 @@ defmodule DeployexWeb.Applications.IndexTest do
     versions: []
   }
 
-  defp resources(attrs \\ %{}) do
-    Map.merge(
-      %Resources{
-        sname: "myphoenixapp-abc123",
-        cpu: 12,
-        memory: 849_346_560,
-        process: %Limit{count: 212_377, limit: 262_144, percent: 81},
-        port: %Limit{count: 40, limit: 65_536, percent: 0},
-        atom: %Limit{
-          count: 61_204,
-          limit: 1_048_576,
-          percent: 5,
-          change_percent: 15,
-          change_minutes: 60
-        }
-      },
-      attrs
+  defp resources, do: %Resources{sname: "myphoenixapp-abc123", cpu: 12, memory: 849_346_560}
+
+  # The Watchdog's samples of an app's instance, with its processes at 81% by default
+  defp usage(name, samples \\ %{}) do
+    FixtureStatus.watchdog_usage(
+      FixtureStatus.node("#{name}-abc123"),
+      Map.merge(
+        %{process: {212_377, 262_144}, port: {40, 65_536}, atom: {61_204, 1_048_576}},
+        samples
+      )
     )
   end
 
@@ -57,6 +49,8 @@ defmodule DeployexWeb.Applications.IndexTest do
 
   @tag :capture_log
   test "GET /applications shows the host card and one row per app", %{conn: conn} do
+    usage("myphoenixapp")
+
     stub_monitoring([
       FixtureStatus.application(%{
         name: "myphoenixapp",
@@ -84,8 +78,7 @@ defmodule DeployexWeb.Applications.IndexTest do
 
     # The problems of the instances show as a count on the row, which opens the instances
     assert html =~ "myphoenixapp-abc123 processes at 81% of the limit"
-    assert html =~ "myphoenixapp-abc123 atoms grew 15% in 1 hour"
-    assert html =~ ~s(aria-label="2 problems: myphoenixapp-abc123 processes)
+    assert html =~ ~s(aria-label="1 problem: myphoenixapp-abc123 processes)
 
     view |> element("#app-myphoenixapp-problems") |> render_click()
     assert has_element?(view, "#instance-myphoenixapp-abc123")
@@ -102,7 +95,6 @@ defmodule DeployexWeb.Applications.IndexTest do
 
     html = view |> element("#instance-myphoenixapp-abc123-limits") |> render_click()
     assert html =~ "212,377 of 262,144"
-    assert html =~ "+15% in 1 hour"
     assert html =~ ~r/>PORT<\/dt>\s*<dd class="dx-mono">5678</
     assert html =~ ~s(href="http://localhost:5678")
     assert html =~ ~s(data-copy="http://localhost:5678")
@@ -119,6 +111,8 @@ defmodule DeployexWeb.Applications.IndexTest do
 
   @tag :capture_log
   test "the attention chip adds the status tag, and Clear brings every app back", %{conn: conn} do
+    usage("myphoenixapp")
+
     stub_monitoring([
       FixtureStatus.application(%{name: "calmapp"}),
       FixtureStatus.application(%{name: "myphoenixapp", resources: resources()})
@@ -145,14 +139,8 @@ defmodule DeployexWeb.Applications.IndexTest do
   test "an instance at its restart threshold shows under the collapsed row, and opens", %{
     conn: conn
   } do
-    at_restart = %Limit{count: 95, limit: 100, percent: 95}
-
-    stub_monitoring([
-      FixtureStatus.application(%{
-        name: "myphoenixapp",
-        resources: resources(%{process: at_restart})
-      })
-    ])
+    usage("myphoenixapp", %{process: {95, 100}})
+    stub_monitoring([FixtureStatus.application(%{name: "myphoenixapp", resources: resources()})])
 
     {:ok, view, html} = live(conn, ~p"/applications")
     assert html =~ "myphoenixapp-abc123 processes at 95% of the limit"
@@ -164,6 +152,8 @@ defmodule DeployexWeb.Applications.IndexTest do
 
   @tag :capture_log
   test "the apps that need attention come worst first", %{conn: conn} do
+    usage("anear")
+
     stub_monitoring([
       FixtureStatus.application(%{name: "anear", resources: resources()}),
       FixtureStatus.application(
@@ -357,12 +347,8 @@ defmodule DeployexWeb.Applications.IndexTest do
 
   @tag :capture_log
   test "GET /applications?app opens the app, and the instance's limits", %{conn: conn} do
-    stub_monitoring([
-      FixtureStatus.application(%{
-        name: "myphoenixapp",
-        resources: resources(%{process: nil, atom: nil})
-      })
-    ])
+    FixtureStatus.watchdog_usage(FixtureStatus.node("myphoenixapp-abc123"), %{port: {40, 65_536}})
+    stub_monitoring([FixtureStatus.application(%{name: "myphoenixapp", resources: resources()})])
 
     {:ok, _view, html} =
       live(conn, ~p"/applications?app=myphoenixapp&instance=myphoenixapp-abc123")

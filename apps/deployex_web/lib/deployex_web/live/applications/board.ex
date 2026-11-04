@@ -176,7 +176,12 @@ defmodule DeployexWeb.ApplicationsLive.Board do
             <div class="dx-lbl">Application</div>
             <div class="dx-lbl">Status</div>
             <div class="dx-lbl text-right">CPU</div>
-            <div class="dx-lbl text-right">Memory</div>
+            <div id="apps-memory-head" class="dx-lbl text-right" phx-hook="Tip">
+              Memory<span class="sr-only">, the resident memory (RSS) of each OS process</span>
+              <span popover="manual" class="dx-tip" aria-hidden="true">
+                The resident memory (RSS) of each OS process
+              </span>
+            </div>
             <div class="dx-lbl text-right">Restarts</div>
             <div class="dx-lbl">Last deploy</div>
             <div></div>
@@ -681,7 +686,7 @@ defmodule DeployexWeb.ApplicationsLive.Board do
           </div>
         </dl>
         <p :if={@instance.limits == []} class="dx-muted col-span-3 text-[0.8125rem]">
-          No reading yet. DeployEx reads the limits of a running instance every 5 seconds.
+          No reading yet. The limits show when the watchdog gets the instance's first metrics.
         </p>
         <div :for={limit <- @instance.limits} class="dx-lim">
           <div class="flex items-baseline justify-between gap-2">
@@ -708,13 +713,6 @@ defmodule DeployexWeb.ApplicationsLive.Board do
             <span class="dx-mono dx-muted whitespace-nowrap">{limit.count} of {limit.limit}</span>
             <span :if={limit.watch} class="dx-muted whitespace-nowrap">{limit.watch}</span>
           </div>
-          <span
-            :if={limit.trend}
-            class="text-xs font-semibold whitespace-nowrap"
-            style={"color: #{Tags.tone(:warning)}"}
-          >
-            {limit.trend}
-          </span>
         </div>
       </div>
     </div>

@@ -289,7 +289,7 @@ defmodule DeployexWeb.ApplicationsLive do
 
     apps =
       statuses
-      |> View.apps()
+      |> View.apps(View.usage(statuses))
       |> Enum.map(fn app ->
         if (Map.has_key?(cleared, app.name) and app.alert) && app.alert.kind == :ghosted,
           do: %{app | alert: nil},

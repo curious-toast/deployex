@@ -4,20 +4,24 @@ defmodule DeployexWeb.ApplicationsLive.ViewTest do
   import Phoenix.LiveViewTest
 
   alias Deployer.Resources
-  alias Deployer.Resources.Limit
   alias Deployer.Status
   alias DeployexWeb.ApplicationsLive.View
   alias DeployexWeb.HostTime
   alias DeployexWeb.UI.Tags
   alias Foundation.Certificates.PublicKey
+  alias Sentinel.Watchdog
+  alias Sentinel.Watchdog.Data
 
   @now ~U[2026-10-28 16:00:00Z]
 
   defp child(attrs) do
+    sname = Map.get(attrs, :sname, "myapp-abc")
+
     Map.merge(
       %Status{
         name: "myapp",
-        sname: "myapp-abc",
+        sname: sname,
+        node: :"#{sname}@host",
         version: "1.0.0",
         status: :running,
         last_deployment: :full_deployment,
@@ -50,9 +54,19 @@ defmodule DeployexWeb.ApplicationsLive.ViewTest do
     )
   end
 
+  # The Watchdog's sample and config of one resource, watched with its defaults unless the config says else
+  defp watched(count, limit, config \\ %{}),
+    do: {%Data{current: count, limit: limit}, Map.merge(%Watchdog{}, config)}
+
+  # The usage of the first instance, myapp-abc
+  defp usage(resources), do: %{:"myapp-abc@host" => resources}
+
+  defp severity(app, usage \\ %{}),
+    do: app |> List.wrap() |> View.apps(usage, @now) |> hd() |> Map.fetch!(:severity)
+
   test "leaves DeployEx out and builds a row for each app" do
     assert [%{name: "myapp", status: %{text: "1/1 running", tone: :success}}] =
-             View.apps([%Status{name: "deployex"}, app([child(%{})])], @now)
+             View.apps([%Status{name: "deployex"}, app([child(%{})])], %{}, @now)
   end
 
   test "sums CPU and memory over the instances, with -- when nothing was read" do
@@ -61,21 +75,29 @@ defmodule DeployexWeb.ApplicationsLive.ViewTest do
       child(%{sname: "myapp-def", resources: %Resources{cpu: 4, memory: 1_073_741_824}})
     ]
 
-    assert [%{cpu: "7%", memory: "3.0 GB"}] = View.apps([app(children)], @now)
+    assert [%{cpu: "7%", memory: "3.0 GB"}] = View.apps([app(children)], %{}, @now)
 
     assert [%{cpu: "--", memory: "--", instances: [%{cpu: "--"}]}] =
-             View.apps([app([child(%{})])], @now)
+             View.apps([app([child(%{})])], %{}, @now)
   end
 
   test "the status follows the running instances" do
     assert [%{status: %{text: "0/1 running", tone: :error}}] =
-             View.apps([app([child(%{status: :idle})])], @now)
+             View.apps([app([child(%{status: :idle})])], %{}, @now)
 
     assert [%{status: %{tone: :warning}, instances: [_, %{status: %{text: "starting"}}]}] =
-             View.apps([app([child(%{}), child(%{sname: "myapp-def", status: :starting})])], @now)
+             View.apps(
+               [app([child(%{}), child(%{sname: "myapp-def", status: :starting})])],
+               %{},
+               @now
+             )
 
     assert [%{status: %{text: "1/2 running", tone: :warning}}] =
-             View.apps([app([child(%{}), child(%{sname: "myapp-def", status: :idle})])], @now)
+             View.apps(
+               [app([child(%{}), child(%{sname: "myapp-def", status: :idle})])],
+               %{},
+               @now
+             )
   end
 
   test "the last deploy is the newest one, hot or full, with its age" do
@@ -88,9 +110,12 @@ defmodule DeployexWeb.ApplicationsLive.ViewTest do
       })
     ]
 
-    assert [%{deploy: %{type: :hot, when: "now"}}] = View.apps([app(children)], @now)
-    assert [%{deploy: %{type: :full, when: "2h ago"}}] = View.apps([app([hd(children)])], @now)
-    assert [%{deploy: nil}] = View.apps([app([child(%{})])], @now)
+    assert [%{deploy: %{type: :hot, when: "now"}}] = View.apps([app(children)], %{}, @now)
+
+    assert [%{deploy: %{type: :full, when: "2h ago"}}] =
+             View.apps([app([hd(children)])], %{}, @now)
+
+    assert [%{deploy: nil}] = View.apps([app([child(%{})])], %{}, @now)
   end
 
   test "a version ghosted after the last deploy is the alert, and the rest keeps running" do
@@ -104,7 +129,7 @@ defmodule DeployexWeb.ApplicationsLive.ViewTest do
                deploy: %{type: :ghosted, when: ^ghosted_at}
              } = row
            ] =
-             View.apps([app(children, %{config: config})], @now)
+             View.apps([app(children, %{config: config})], %{}, @now)
 
     assert text == "1.1.0 failed and is ghosted. 1.0.0 keeps running, so the app is up."
     assert %{tone: :warning, title: "1.1.0 failed and is ghosted"} = row.alert
@@ -113,38 +138,31 @@ defmodule DeployexWeb.ApplicationsLive.ViewTest do
 
     # A version ghosted before the last deploy is history, not an alert
     old = %{config | last_ghosted_at: ~U[2026-10-28 13:00:00Z]}
-    assert [%{alert: nil}] = View.apps([app(children, %{config: old})], @now)
+    assert [%{alert: nil}] = View.apps([app(children, %{config: old})], %{}, @now)
   end
 
   test "the notes list the TLS expiry, the limits near the end and the crashes" do
-    resources = %Resources{
-      process: %Limit{count: 950, limit: 1_000, percent: 95},
-      port: %Limit{count: 0, limit: 65_536, percent: 0},
-      atom: %Limit{
-        count: 200_000,
-        limit: 1_048_576,
-        percent: 19,
-        change_percent: 20,
-        change_minutes: 20
-      }
-    }
+    usage =
+      usage(%{
+        process: watched(950, 1_000),
+        port: watched(0, 65_536),
+        atom: watched(200_000, 1_048_576)
+      })
 
     children = [
       child(%{
         certificates: [%PublicKey{expires_in_days: 5}],
-        resources: resources,
         last_crash_at: ~U[2026-10-28 14:31:00Z]
       }),
       child(%{sname: "myapp-def", certificates: [%PublicKey{expires_in_days: 20}]})
     ]
 
     assert [%{notes: notes, instances: [first | _], problems: problems}] =
-             View.apps([app(children)], @now)
+             View.apps([app(children)], usage, @now)
 
     assert %{tone: :error, text: "TLS certificate expires in 5 days"} in notes
     assert %{tone: :warning, text: "TLS certificate expires in 20 days"} in notes
     assert %{tone: :warning, text: "myapp-abc processes at 95% of the limit"} in notes
-    assert %{tone: :warning, text: "myapp-abc atoms grew 20% in 20 minutes"} in notes
     crashed = HostTime.format(~U[2026-10-28 14:31:00Z], "%H:%M")
     assert %{tone: :warning, text: "myapp-abc crash restart at #{crashed}"} in notes
 
@@ -152,43 +170,32 @@ defmodule DeployexWeb.ApplicationsLive.ViewTest do
     assert problems == [
              "TLS certificate expires in 5 days",
              "TLS certificate expires in 20 days",
-             "myapp-abc processes at 95% of the limit",
-             "myapp-abc atoms grew 20% in 20 minutes"
+             "myapp-abc processes at 95% of the limit"
            ]
 
-    assert [
-             %{level: 2, percent_text: "95%"},
-             %{percent_text: "0%"},
-             %{percent_text: "19%", trend: "+20% in 20 minutes"}
-           ] =
+    assert [%{level: 2, percent_text: "95%"}, %{percent_text: "0%"}, %{percent_text: "19%"}] =
              first.limits
   end
 
-  test "a running instance near no limit has no warning" do
-    resources = %Resources{
-      process: %Limit{
-        count: 100,
-        limit: 1_000,
-        percent: 10,
-        change_percent: 5,
-        change_minutes: 60
-      },
-      # One port more on a small count is no trend
-      port: %Limit{count: 8, limit: 65_536, percent: 0, change_percent: 14, change_minutes: 18},
-      atom: %Limit{count: 900, limit: 1_000, percent: 85}
-    }
+  test "an instance below the warning thresholds has no warning" do
+    usage =
+      usage(%{
+        process: watched(100, 1_000),
+        port: watched(8, 65_536),
+        atom: watched(850, 1_000)
+      })
 
     assert [
              %{
                instances: [
                  %{
                    warnings: ["atoms at 85% of the limit"],
-                   limits: [%{trend: nil}, _, %{level: 1}]
+                   limits: [%{level: 0}, %{level: 0, percent_text: "<1%"}, %{level: 1}]
                  }
                ]
              }
            ] =
-             View.apps([app([child(%{resources: resources})])], @now)
+             View.apps([app([child(%{})])], usage, @now)
   end
 
   test "restarts count crashes apart from the restarts an operator or the watchdog asked for" do
@@ -203,7 +210,7 @@ defmodule DeployexWeb.ApplicationsLive.ViewTest do
     ]
 
     assert [%{restarts: app_restarts, instances: [crashed, forced, none]}] =
-             View.apps([app(children)], @now)
+             View.apps([app(children)], %{}, @now)
 
     assert app_restarts == %{
              count: 4,
@@ -225,33 +232,32 @@ defmodule DeployexWeb.ApplicationsLive.ViewTest do
     assert none.restarts == %{count: 0, crash: false, lines: ["No restarts"]}
   end
 
-  test "the limits follow the app's monitoring settings, and a type it does not name is not watched" do
-    resources = %Resources{
-      process: %Limit{count: 600, limit: 1_000, percent: 60},
-      port: %Limit{count: 70, limit: 100, percent: 70},
-      atom: %Limit{count: 500, limit: 1_000, percent: 50}
-    }
-
-    monitoring = [
-      process: %{
-        enable_restart: true,
-        warning_threshold_percent: 50,
-        restart_threshold_percent: 65
-      },
-      port: %Foundation.Yaml.Monitoring{
-        enable_restart: false,
-        warning_threshold_percent: 60,
-        restart_threshold_percent: 80
-      }
-    ]
+  test "the limits follow the Watchdog's config, and a type it does not watch has no restart mark" do
+    usage =
+      usage(%{
+        process:
+          watched(600, 1_000, %{warning_threshold_percent: 50, restart_threshold_percent: 65}),
+        port:
+          watched(70, 100, %{
+            enable_restart: false,
+            warning_threshold_percent: 60,
+            restart_threshold_percent: 80
+          }),
+        atom: watched(500, 1_000, %{enabled: false})
+      })
 
     assert [%{instances: [%{limits: [process, port, atom], warnings: warnings}]}] =
-             View.apps([app([child(%{resources: resources, monitoring: monitoring})])], @now)
+             View.apps([app([child(%{})])], usage, @now)
 
     assert %{level: 1, restart_at: 65, watch: "restarts at 65%"} = process
     assert %{level: 1, restart_at: false, watch: "restart off"} = port
     assert %{level: 0, restart_at: false, watch: nil} = atom
     assert warnings == ["processes at 60% of the limit", "ports at 70% of the limit"]
+  end
+
+  test "an instance with no sample from the Watchdog shows no limits" do
+    assert [%{instances: [%{limits: [], warnings: []}]}] =
+             View.apps([app([child(%{})])], usage(%{}), @now)
   end
 
   test "an instance lists its ports and served URLs, and the app shows its own logo" do
@@ -271,21 +277,21 @@ defmodule DeployexWeb.ApplicationsLive.ViewTest do
                ]
              }
            ] =
-             View.apps([app(children)], @now)
+             View.apps([app(children)], %{}, @now)
 
-    assert [%{logo: nil}] = View.apps([app([child(%{})])], @now)
+    assert [%{logo: nil}] = View.apps([app([child(%{})])], %{}, @now)
   end
 
   test "a subtitle leaves out the version when nothing runs" do
     children = [child(%{status: :idle, version: nil})]
-    assert [%{sub: "OTP 29 · Elixir 1.20.4"}] = View.apps([app(children)], @now)
+    assert [%{sub: "OTP 29 · Elixir 1.20.4"}] = View.apps([app(children)], %{}, @now)
   end
 
   test "apps sort by name, and a crash in the last hour is a problem" do
     children = [child(%{last_crash_at: ~U[2026-10-28 15:40:00Z]})]
 
     assert [%{name: "alpha", problems: []}, %{name: "myapp", problems: problems} = crashed] =
-             View.apps([app(children), app([child(%{})], %{name: "alpha"})], @now)
+             View.apps([app(children), app([child(%{})], %{name: "alpha"})], %{}, @now)
 
     assert problems == [
              "myapp-abc crashed at #{HostTime.format(~U[2026-10-28 15:40:00Z], "%H:%M")}"
@@ -297,27 +303,23 @@ defmodule DeployexWeb.ApplicationsLive.ViewTest do
   test "severity ranks down first, then a restart threshold or TLS soon, then failures, then the rest" do
     ghosted = %{last_ghosted_version: "1.1.0", last_ghosted_at: ~U[2026-10-28 15:00:00Z]}
     deployed = ~U[2026-10-28 14:00:00Z]
-    at_restart = %Resources{process: %Limit{count: 95, limit: 100, percent: 95}}
-    warning = %Resources{process: %Limit{count: 80, limit: 100, percent: 80}}
+    at_restart = usage(%{process: watched(95, 100)})
+    warning = usage(%{process: watched(80, 100)})
 
-    severity = fn app ->
-      app |> List.wrap() |> View.apps(@now) |> hd() |> Map.fetch!(:severity)
-    end
-
-    assert severity.(
+    assert severity(
              app([child(%{status: :idle, version: nil, deployed_at: deployed})], %{
                config: ghosted
              })
            ) == 4
 
-    assert severity.(app([child(%{resources: at_restart})])) == 3
-    assert severity.(app([child(%{certificates: [%PublicKey{expires_in_days: 5}]})])) == 3
-    assert severity.(app([child(%{deployed_at: deployed})], %{config: ghosted})) == 2
-    assert severity.(app([child(%{last_crash_at: ~U[2026-10-28 15:40:00Z]})])) == 2
-    assert severity.(app([child(%{resources: warning})])) == 2
-    assert severity.(app([child(%{certificates: [%PublicKey{expires_in_days: 20}]})])) == 1
-    assert severity.(app([child(%{status: :pre_commands})])) == 1
-    assert severity.(app([child(%{})])) == 0
+    assert severity(app([child(%{})]), at_restart) == 3
+    assert severity(app([child(%{certificates: [%PublicKey{expires_in_days: 5}]})])) == 3
+    assert severity(app([child(%{deployed_at: deployed})], %{config: ghosted})) == 2
+    assert severity(app([child(%{last_crash_at: ~U[2026-10-28 15:40:00Z]})])) == 2
+    assert severity(app([child(%{})]), warning) == 2
+    assert severity(app([child(%{certificates: [%PublicKey{expires_in_days: 20}]})])) == 1
+    assert severity(app([child(%{status: :pre_commands})])) == 1
+    assert severity(app([child(%{})])) == 0
 
     # A failed pre_command is down when no instance runs, and failing while another one runs
     failed =
@@ -327,8 +329,8 @@ defmodule DeployexWeb.ApplicationsLive.ViewTest do
         failed_pre_commands: ["eval Migrator.run()"]
       })
 
-    assert severity.(app([failed])) == 4
-    assert severity.(app([failed, child(%{sname: "myapp-def"})])) == 2
+    assert severity(app([failed])) == 4
+    assert severity(app([failed, child(%{sname: "myapp-def"})])) == 2
   end
 
   test "a failed pre_command is an error callout that names the command" do
@@ -340,7 +342,7 @@ defmodule DeployexWeb.ApplicationsLive.ViewTest do
       })
 
     assert [%{alert: %{kind: :pre_commands, tone: :error, blocking: true} = alert}] =
-             View.apps([app([failed])], @now)
+             View.apps([app([failed])], %{}, @now)
 
     assert alert.title == "pre_commands for 1.0.0 failed"
     assert alert.commands == ["eval Migrator.run()"]
@@ -356,26 +358,22 @@ defmodule DeployexWeb.ApplicationsLive.ViewTest do
                }
              }
            ] =
-             View.apps([app([child(%{status: :pre_commands, otp: :not_connected})])], @now)
+             View.apps([app([child(%{status: :pre_commands, otp: :not_connected})])], %{}, @now)
 
     # A hot upgrade's pre_commands run while the instance runs, so it counts as running
     assert [%{running: 1, alert: %{title: "Running the hot upgrade's pre_commands"}}] =
-             View.apps([app([child(%{status: :pre_commands, otp: :connected})])], @now)
+             View.apps([app([child(%{status: :pre_commands, otp: :connected})])], %{}, @now)
   end
 
   test "a TLS certificate within 7 days and an instance at its restart threshold are urgent" do
-    at_restart = %Resources{process: %Limit{count: 95, limit: 100, percent: 95}}
+    at_restart = usage(%{process: watched(95, 100)})
 
     children = [
-      child(%{
-        resources: at_restart,
-        monitoring: [process: %{}],
-        certificates: [%PublicKey{expires_in_days: 5}]
-      }),
+      child(%{certificates: [%PublicKey{expires_in_days: 5}]}),
       child(%{sname: "myapp-def", certificates: [%PublicKey{expires_in_days: 20}]})
     ]
 
-    assert [%{urgent: [tls, limit]}] = View.apps([app(children)], @now)
+    assert [%{urgent: [tls, limit]}] = View.apps([app(children)], at_restart, @now)
     assert %{kind: :tls, title: "TLS certificate expires in 5 days"} = tls
 
     assert %{
@@ -385,12 +383,12 @@ defmodule DeployexWeb.ApplicationsLive.ViewTest do
              detail: "The watchdog restarts the instance at 90%."
            } = limit
 
-    off = [process: %{enable_restart: false}]
+    off = usage(%{process: watched(95, 100, %{enable_restart: false})})
 
     assert [%{urgent: [%{detail: "Restart is off for this limit" <> _}]}] =
-             View.apps([app([child(%{resources: at_restart, monitoring: off})])], @now)
+             View.apps([app([child(%{})])], off, @now)
 
-    assert [%{urgent: []}] = View.apps([app([child(%{})])], @now)
+    assert [%{urgent: []}] = View.apps([app([child(%{})])], %{}, @now)
   end
 
   test "a duration reads in its largest whole unit" do
@@ -404,10 +402,10 @@ defmodule DeployexWeb.ApplicationsLive.ViewTest do
 
   test "an Erlang or Gleam instance gets the Erlang shell, and a status with no instance says so" do
     assert [%{language_name: "Erlang", instances: [%{shell: "Erlang shell"}]}] =
-             View.apps([app([child(%{})], %{language: "erlang"})], @now)
+             View.apps([app([child(%{})], %{language: "erlang"})], %{}, @now)
 
     assert [%{language_name: "Gleam", sub: "no version", status: %{text: "0/0 running"}}] =
-             View.apps([app([], %{language: "gleam"})], @now)
+             View.apps([app([], %{language: "gleam"})], %{}, @now)
   end
 
   test "the host card shows the system with its architecture, and -- with no reading" do

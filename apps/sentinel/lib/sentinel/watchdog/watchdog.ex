@@ -325,6 +325,28 @@ defmodule Sentinel.Watchdog do
     config
   end
 
+  @doc """
+  Returns the last sample and the config of each resource the Watchdog checks for an instance node, or for
+  DeployEx with `:deployex`. A resource with no sample yet is left out, and so is every resource when the
+  Watchdog does not run.
+  """
+  @spec usage(owner :: node() | :deployex) :: %{atom() => {Data.t(), t()}}
+  def usage(owner) do
+    types = if owner == :deployex, do: [:memory | @deployex_limits], else: @monitored_app_limits
+
+    if :ets.whereis(@watchdog_data) == :undefined do
+      %{}
+    else
+      for type <- types,
+          [{_, %Data{current: current, limit: limit} = data}] <-
+            [:ets.lookup(@watchdog_data, {owner, :data, type})],
+          is_integer(current) and is_integer(limit) and limit > 0,
+          [{_, config}] <- [:ets.lookup(@watchdog_data, {owner, :config, type})],
+          into: %{},
+          do: {type, {data, config}}
+    end
+  end
+
   @spec reset_app_statistics(name :: String.t()) :: :ok
   def reset_app_statistics(name) do
     GenServer.call(__MODULE__, {:reset_app_statistics, name})

@@ -6,6 +6,8 @@ defmodule DeployexWeb.Fixture.Status do
   alias Deployer.Status
   alias Foundation.Catalog.Version
   alias Foundation.Certificates.PublicKey
+  alias Sentinel.Watchdog
+  alias Sentinel.Watchdog.Data
 
   def version(attrs \\ %{}) do
     name = "testapp"
@@ -121,6 +123,31 @@ defmodule DeployexWeb.Fixture.Status do
 
   def list do
     [deployex(), application()]
+  end
+
+  @doc """
+  Returns the node of an instance that `application/2` builds.
+  """
+  def node(sname) do
+    [_sname, hostname] = Node.self() |> Atom.to_string() |> String.split(["@"])
+    String.to_atom("#{sname}@#{hostname}")
+  end
+
+  @doc """
+  Puts the Watchdog's samples of an instance node in its table, as `{count, limit}` for each resource, with
+  the Watchdog's default config. The table belongs to the test process.
+  """
+  def watchdog_usage(node, samples) do
+    table = :deployex_watchdog_data
+
+    if :ets.whereis(table) == :undefined, do: :ets.new(table, [:set, :public, :named_table])
+
+    for {type, {count, limit}} <- samples do
+      :ets.insert(table, {{node, :data, type}, %Data{current: count, limit: limit}})
+      :ets.insert(table, {{node, :config, type}, %Watchdog{}})
+    end
+
+    :ok
   end
 
   def default_public_key do

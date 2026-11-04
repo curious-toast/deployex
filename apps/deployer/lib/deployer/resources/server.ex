@@ -2,26 +2,19 @@ defmodule Deployer.Resources.Server do
   @moduledoc """
   Samples each running instance every few seconds and keeps the result in a protected ETS table.
 
-  A node that does not answer an RPC within the timeout is skipped for that sample, and its entry is removed,
-  so a hung node delays the loop by at most one timeout.
+  Each sample sends one RPC to every instance at the same time, so a hung node delays it by at most one
+  timeout. A node that does not answer is skipped for that sample, and its entry is removed.
   """
   use GenServer
 
   alias Deployer.Monitor
   alias Deployer.Resources
-  alias Deployer.Resources.Limit
   alias Foundation.Catalog
   alias Foundation.Rpc
   alias Host.Commander
 
   @sample_interval :timer.seconds(5)
   @rpc_timeout 1_000
-  @history_minutes 60
-  @limits [
-    process: {:process_count, :process_limit},
-    port: {:port_count, :port_limit},
-    atom: {:atom_count, :atom_limit}
-  ]
 
   ### ==========================================================================
   ### GenServer callbacks
@@ -84,16 +77,18 @@ defmodule Deployer.Resources.Server do
 
   defp sample(%{table: table, instances: previous} = state) do
     now_ms = System.monotonic_time(:millisecond)
-    minute = div(System.os_time(:second), 60)
+    running = running_instances()
+    runtimes = rpc_all(Enum.map(running, &elem(&1, 1)), :erlang, :statistics, [:runtime])
+    answered = Enum.filter(running, fn {_sname, node} -> Map.has_key?(runtimes, node) end)
+    os_pids = os_pids(answered, previous)
 
     instances =
-      running_instances()
-      |> Enum.reduce(%{}, fn {sname, node}, acc ->
-        case sample_instance(node, Map.get(previous, sname), now_ms, minute) do
-          {:ok, instance} -> Map.put(acc, sname, instance)
-          :error -> acc
-        end
-      end)
+      for {sname, node} <- answered, Map.has_key?(os_pids, node), into: %{} do
+        {runtime_ms, _since_last_call} = Map.fetch!(runtimes, node)
+
+        {sname,
+         %{node: node, os_pid: Map.fetch!(os_pids, node), runtime_ms: runtime_ms, at_ms: now_ms}}
+      end
 
     memory = read_memory(instances)
     # The runtime can report :unknown, and the CPU share then counts one core
@@ -110,9 +105,6 @@ defmodule Deployer.Resources.Server do
         sname: sname,
         cpu: cpu_percent(instance, Map.get(previous, sname), cores),
         memory: Map.get(memory, instance.os_pid),
-        process: limit(instance, :process, minute),
-        port: limit(instance, :port, minute),
-        atom: limit(instance, :atom, minute),
         sampled_at: sampled_at
       }
 
@@ -133,59 +125,33 @@ defmodule Deployer.Resources.Server do
     end)
   end
 
-  defp sample_instance(node, previous, now_ms, minute) do
-    with {:ok, {runtime_ms, _since_last_call}} <- rpc(node, :erlang, :statistics, [:runtime]),
-         {:ok, os_pid} <- os_pid(node, previous),
-         {:ok, counts} <- counts(node) do
-      history = if previous && previous.node == node, do: previous.history, else: []
+  # The OS pid of an instance does not change while its node stays the same, so only a new node is asked
+  defp os_pids(instances, previous) do
+    {known, new} =
+      Enum.split_with(instances, fn {sname, node} ->
+        match?(%{node: ^node}, Map.get(previous, sname))
+      end)
 
-      {:ok,
-       %{
-         node: node,
-         os_pid: os_pid,
-         runtime_ms: runtime_ms,
-         at_ms: now_ms,
-         counts: counts,
-         history: add_history(history, minute, counts)
-       }}
-    end
+    asked =
+      new
+      |> Enum.map(&elem(&1, 1))
+      |> rpc_all(:os, :getpid, [])
+      |> Map.new(fn {node, os_pid} -> {node, os_pid |> to_string() |> String.to_integer()} end)
+
+    Map.merge(Map.new(known, fn {sname, node} -> {node, previous[sname].os_pid} end), asked)
   end
 
-  # The OS pid of an instance does not change while its node stays the same
-  defp os_pid(node, %{node: node, os_pid: os_pid}), do: {:ok, os_pid}
+  # The value of each node that answered
+  defp rpc_all([], _module, _function, _args), do: %{}
 
-  defp os_pid(node, _previous) do
-    with {:ok, os_pid} <- rpc(node, :os, :getpid, []) do
-      {:ok, os_pid |> to_string() |> String.to_integer()}
-    end
-  end
-
-  defp counts(node) do
-    @limits
-    |> Enum.flat_map(fn {_kind, {count, limit}} -> [count, limit] end)
-    |> Enum.reduce_while({:ok, %{}}, fn key, {:ok, acc} ->
-      case rpc(node, :erlang, :system_info, [key]) do
-        {:ok, value} when is_integer(value) -> {:cont, {:ok, Map.put(acc, key, value)}}
-        _ -> {:halt, :error}
-      end
+  defp rpc_all(nodes, module, function, args) do
+    nodes
+    |> Enum.zip(Rpc.multicall(nodes, module, function, args, @rpc_timeout))
+    |> Enum.flat_map(fn
+      {node, {:ok, value}} -> [{node, value}]
+      _failed -> []
     end)
-  end
-
-  defp rpc(node, module, function, args) do
-    case Rpc.call(node, module, function, args, @rpc_timeout) do
-      {:badrpc, _reason} -> :error
-      value -> {:ok, value}
-    end
-  end
-
-  # The minute series keeps one entry per minute, newest first, for the last hour
-  defp add_history([{minute, _counts} | rest], minute, counts), do: [{minute, counts} | rest]
-
-  defp add_history(history, minute, counts) do
-    [
-      {minute, counts}
-      | Enum.take_while(history, fn {at, _} -> minute - at <= @history_minutes end)
-    ]
+    |> Map.new()
   end
 
   # CPU time of all the BEAM's threads over the wall time since the last sample, as a share of every core
@@ -199,29 +165,6 @@ defmodule Deployer.Resources.Server do
   end
 
   defp cpu_percent(_instance, _previous, _cores), do: nil
-
-  defp limit(%{counts: counts, history: history}, kind, minute) do
-    {count_key, limit_key} = Keyword.fetch!(@limits, kind)
-    count = Map.fetch!(counts, count_key)
-    limit = Map.fetch!(counts, limit_key)
-
-    {change_percent, change_minutes} =
-      case List.last(history) do
-        {at, %{^count_key => old}} when at < minute and old > 0 ->
-          {round((count - old) / old * 100), minute - at}
-
-        _ ->
-          {nil, nil}
-      end
-
-    %Limit{
-      count: count,
-      limit: limit,
-      percent: if(limit > 0, do: trunc(count / limit * 100), else: 0),
-      change_percent: change_percent,
-      change_minutes: change_minutes
-    }
-  end
 
   # One ps call for every instance. The resident memory comes in kilobytes
   defp read_memory(instances) when map_size(instances) == 0, do: %{}

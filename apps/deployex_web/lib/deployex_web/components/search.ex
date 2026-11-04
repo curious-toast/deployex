@@ -104,7 +104,7 @@ defmodule DeployexWeb.Components.Search do
   def index(tags \\ []) do
     apps =
       case Deployer.Status.monitoring() do
-        {:ok, statuses} -> View.apps(statuses)
+        {:ok, statuses} -> View.apps(statuses, View.usage(statuses))
         _ -> []
       end
 

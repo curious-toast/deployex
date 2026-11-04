@@ -4,21 +4,9 @@ defmodule DeployexWeb.ApplicationsLive.View do
   one row per application, its instances, their limits, and the problems that need an action.
   """
 
-  alias Deployer.Resources
-  alias Deployer.Resources.Limit
   alias DeployexWeb.HostTime
 
-  # The watchdog's values for a limit type the app's monitoring names without them. A type it does not
-  # name is not watched, and its level uses these values too
-  @watch_defaults %{
-    enable_restart: true,
-    warning_threshold_percent: 75,
-    restart_threshold_percent: 90
-  }
-  # A count that grew this much, and by this share of its limit, over this many minutes is a trend worth a note
-  @trend_percent 10
-  @trend_share 0.5
-  @trend_minutes 10
+  @limit_types [{"Processes", :process}, {"Ports", :port}, {"Atoms", :atom}]
   @tls_warn_days 30
 
   @doc """
@@ -36,14 +24,25 @@ defmodule DeployexWeb.ApplicationsLive.View do
   end
 
   @doc """
-  One row for each application, in the order of the status, with DeployEx left out.
+  One row for each application, in the order of the status, with DeployEx left out. The usage holds the
+  Watchdog's samples and config for each instance node, from `Sentinel.Watchdog.usage/1`.
   """
-  @spec apps([Deployer.Status.t()], DateTime.t()) :: [map()]
-  def apps(statuses, now \\ DateTime.utc_now()) do
+  @spec apps([Deployer.Status.t()], %{node() => map()}, DateTime.t()) :: [map()]
+  def apps(statuses, usage, now \\ DateTime.utc_now()) do
     statuses
     |> Enum.reject(&(&1.name == "deployex"))
     |> Enum.sort_by(& &1.name)
-    |> Enum.map(&app(&1, now))
+    |> Enum.map(&app(&1, usage, now))
+  end
+
+  @doc """
+  The Watchdog's samples and config for the node of each instance in the statuses.
+  """
+  @spec usage([Deployer.Status.t()]) :: %{node() => map()}
+  def usage(statuses) do
+    for %{children: children} <- statuses, %{node: node} <- children, node, into: %{} do
+      {node, Sentinel.Watchdog.usage(node)}
+    end
   end
 
   @doc """
@@ -61,8 +60,10 @@ defmodule DeployexWeb.ApplicationsLive.View do
     %{count: length(apps), blocking: Enum.any?(apps, &(&1.alert != nil and &1.alert.blocking))}
   end
 
-  defp app(status, now) do
-    instances = Enum.map(status.children, &instance(&1, status.language, now))
+  defp app(status, usage, now) do
+    instances =
+      Enum.map(status.children, &instance(&1, status.language, Map.get(usage, &1.node, %{}), now))
+
     running = Enum.count(status.children, &running?/1)
     total = max(status.replicas, length(status.children))
 
@@ -104,9 +105,9 @@ defmodule DeployexWeb.ApplicationsLive.View do
     }
   end
 
-  defp instance(child, language, now) do
+  defp instance(child, language, usage, now) do
     resources = child.resources
-    limits = limits(resources, child.monitoring)
+    limits = limits(usage)
     warnings = Enum.flat_map(limits, & &1.warning)
 
     %{
@@ -132,85 +133,45 @@ defmodule DeployexWeb.ApplicationsLive.View do
     }
   end
 
-  defp limits(%Resources{} = resources, monitoring) do
-    for {name, type, %Limit{} = limit} <- [
-          {"Processes", :process, resources.process},
-          {"Ports", :port, resources.port},
-          {"Atoms", :atom, resources.atom}
-        ] do
-      limit_row(name, limit, watch(monitoring, type))
+  defp limits(usage) do
+    for {name, type} <- @limit_types, {:ok, {data, config}} <- [Map.fetch(usage, type)] do
+      limit_row(name, data, config)
     end
   end
 
-  defp limits(_resources, _monitoring), do: []
-
-  # The app's monitoring settings for one limit type, from the YAML (a struct) or the config (a map)
-  defp watch(monitoring, type) do
-    case Enum.find_value(List.wrap(monitoring), fn {key, value} -> key == type && value end) do
-      %_{} = config -> watch_config(Map.from_struct(config))
-      %{} = config -> watch_config(config)
-      _ -> Map.put(@watch_defaults, :watched, false)
-    end
-  end
-
-  defp watch_config(config) do
-    @watch_defaults
-    |> Map.merge(Map.take(config, Map.keys(@watch_defaults)), fn _key, default, value ->
-      if is_nil(value), do: default, else: value
-    end)
-    |> Map.put(:watched, true)
-  end
-
-  defp limit_row(name, limit, watch) do
-    level = level(limit.percent, watch)
-    trend = trend(limit)
+  # The percent and the level use the Watchdog's sample, ratio and thresholds, so the page shows what it checks
+  defp limit_row(name, %{current: count, limit: limit}, config) do
+    percent = trunc(count / limit * 100)
+    level = level(percent, config)
 
     %{
       name: name,
-      count: number(limit.count),
-      limit: number(limit.limit),
-      percent: limit.percent,
-      percent_text:
-        if(limit.count > 0 and limit.percent < 1, do: "<1%", else: "#{limit.percent}%"),
+      count: number(count),
+      limit: number(limit),
+      percent: percent,
+      percent_text: if(count > 0 and percent < 1, do: "<1%", else: "#{percent}%"),
       level: level,
-      trend: trend,
-      restart_at: watch.watched && watch.enable_restart && watch.restart_threshold_percent,
-      watch: watch_text(watch),
-      warning: limit_warning(String.downcase(name), limit.percent, level, trend)
+      restart_at: config.enabled && config.enable_restart && config.restart_threshold_percent,
+      watch: watch_text(config),
+      warning: limit_warning(String.downcase(name), percent, level)
     }
   end
 
   defp level(percent, %{restart_threshold_percent: restart}) when percent >= restart, do: 2
   defp level(percent, %{warning_threshold_percent: warning}) when percent >= warning, do: 1
-  defp level(_percent, _watch), do: 0
+  defp level(_percent, _config), do: 0
 
-  defp watch_text(%{watched: false}), do: nil
+  defp watch_text(%{enabled: false}), do: nil
 
   defp watch_text(%{enable_restart: true, restart_threshold_percent: restart}),
     do: "restarts at #{restart}%"
 
-  defp watch_text(_watch), do: "restart off"
+  defp watch_text(_config), do: "restart off"
 
-  defp limit_warning(name, percent, level, _trend) when level > 0,
+  defp limit_warning(name, percent, level) when level > 0,
     do: ["#{name} at #{percent}% of the limit"]
 
-  defp limit_warning(name, _percent, _level, "+" <> trend), do: ["#{name} grew #{trend}"]
-
-  defp limit_warning(_name, _percent, _level, _trend), do: []
-
-  # The growth in the count, from its change in percent, so a few ports more on a small count is no trend
-  defp trend(%Limit{count: count, limit: limit, change_percent: change, change_minutes: minutes})
-       when is_integer(change) and change >= @trend_percent and minutes >= @trend_minutes and
-              is_integer(limit) and limit > 0 do
-    grown = count - count * 100 / (100 + change)
-
-    if grown * 100 / limit >= @trend_share do
-      over = if minutes >= 60, do: "1 hour", else: "#{minutes} minutes"
-      "+#{change}% in #{over}"
-    end
-  end
-
-  defp trend(_limit), do: nil
+  defp limit_warning(_name, _percent, _level), do: []
 
   # A ghosted version is the latest event of the app when it is newer than the last deploy
   defp ghosted(%{config: %{last_ghosted_version: version} = config}, instances)
