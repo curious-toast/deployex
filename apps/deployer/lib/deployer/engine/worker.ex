@@ -894,8 +894,34 @@ defmodule Deployer.Engine.Worker do
         Logger.info(" # Moving to the waiting instance: #{waiting}")
         %{state | current: waiting}
 
+      # An idle rollout moves to an instance on another version, as when the target goes back
+      # during a rollout, so the instances that took the version follow the target
+      release_version != nil and not ghosted_version? and
+          is_nil(state.deployments[current].timer_ref) ->
+        move_to_off_target_instance(state, release_version)
+
       true ->
         state
+    end
+  end
+
+  defp move_to_off_target_instance(state, release_version) do
+    off_target =
+      Enum.find(1..state.replicas, fn instance ->
+        case state.deployments[instance] do
+          %Engine.Deployment{state: :active, sname: sname} when sname != nil ->
+            Status.current_version(sname) != release_version
+
+          _deployment ->
+            false
+        end
+      end)
+
+    if off_target do
+      Logger.info(" # Moving to the instance on another version: #{off_target}")
+      %{state | current: off_target}
+    else
+      state
     end
   end
 

@@ -5328,6 +5328,129 @@ defmodule Deployer.EngineTest do
     end
   end
 
+  describe "Every instance follows the target version" do
+    # Three replicas already run 1.0.0. Each sname reports the version its deployment recorded
+    defp start_replicas_on_one_version(name) do
+      test_pid = self()
+      snames = for _ <- 1..3, do: Catalog.create_sname(name)
+      Enum.each(snames, &FixtureFiles.create_bin_files/1)
+      versions = :ets.new(:versions, [:public])
+      Enum.each(snames, &:ets.insert(versions, {&1, "1.0.0"}))
+      stub_full_deployments()
+
+      Deployer.StatusMock
+      |> expect(:list_installed_apps, fn _name -> snames end)
+      |> expect(:history_version_list, fn _name, _options ->
+        Enum.map(snames, &%Catalog.Version{version: "1.0.0", sname: &1})
+      end)
+      |> stub(:current_version, fn sname ->
+        case :ets.lookup(versions, sname) do
+          [{^sname, version}] -> version
+          [] -> nil
+        end
+      end)
+      |> stub(:set_current_version_map, fn sname, %{version: version}, _attrs ->
+        :ets.insert(versions, {sname, version})
+        :ok
+      end)
+
+      Deployer.MonitorMock
+      |> stub(:start_service, fn %{sname: sname} ->
+        if sname in snames do
+          {:error, {:already_started, self()}}
+        else
+          send(test_pid, {:started, sname})
+          {:ok, self()}
+        end
+      end)
+      |> stub(:state, fn sname ->
+        if sname in snames,
+          do: %Deployer.Monitor{sname: sname, current_pid: self(), status: :running},
+          else: %Deployer.Monitor{}
+      end)
+      |> stub(:stop_service, fn _name, _sname -> :ok end)
+
+      assert {:ok, worker_pid} =
+               Engine.Worker.start_link(%Engine.Worker{
+                 replicas: 3,
+                 deploy_rollback_timeout_ms: 60_000,
+                 deploy_schedule_interval_ms: 50,
+                 name: name,
+                 language: "elixir"
+               })
+
+      # The replicas already run, so the start up visits each one without a window
+      await_state(worker_pid, fn state ->
+        state.current == 1 and Enum.all?(state.deployments, fn {_i, d} -> d.state == :active end)
+      end)
+
+      {worker_pid, versions}
+    end
+
+    # Each step of a rollout waits for a schedule tick
+    defp await_state(worker_pid, match?, attempts \\ 50) do
+      state = :sys.get_state(worker_pid)
+
+      cond do
+        match?.(state) ->
+          state
+
+        attempts == 0 ->
+          flunk("the worker state did not match: #{inspect(state)}")
+
+        true ->
+          Process.sleep(20)
+          await_state(worker_pid, match?, attempts - 1)
+      end
+    end
+
+    defp go_back(:current_json, _name, set_version), do: set_version.("1.0.0")
+
+    defp go_back(:pin, name, _set_version) do
+      Catalog.config_update(name, %{
+        Catalog.config(name)
+        | mode: :manual,
+          manual_version: %{version: "1.0.0", hash: "local", pre_commands: []}
+      })
+    end
+
+    for go_back <- [:current_json, :pin] do
+      @tag :capture_log
+      test "With three replicas, an instance that took a version goes back with the target - #{go_back}" do
+        name = "myelixir"
+        set_version = switchable_version_map("1.0.0")
+
+        with_mock System, [:passthrough],
+          cmd: fn "tar", ["-x", "-f", _source_path, "-C", _dest_path] -> {"", 0} end do
+          {worker_pid, versions} = start_replicas_on_one_version(name)
+
+          set_version.("2.0.0")
+          assert_receive {:started, first_sname}, 1_000
+          Engine.notify_application_running(first_sname)
+          assert_receive {:started, _second_sname}, 1_000
+
+          # The target goes back to 1.0.0 in the window of instance 2, which then deploys 1.0.0
+          go_back(unquote(go_back), name, set_version)
+          assert_receive {:started, second_sname}, 1_000
+          Engine.notify_application_running(second_sname)
+
+          # Instance 1 runs 2.0.0, which is no longer the target
+          assert_receive {:started, rollback_sname}, 1_000
+          Engine.notify_application_running(rollback_sname)
+
+          state = await_state(worker_pid, &(&1.current == 2))
+
+          assert %{1 => %{sname: ^rollback_sname}, 2 => %{sname: ^second_sname}} =
+                   state.deployments
+
+          assert Enum.all?(state.deployments, fn {_instance, %{sname: sname}} ->
+                   :ets.lookup(versions, sname) == [{sname, "1.0.0"}]
+                 end)
+        end
+      end
+    end
+  end
+
   # Monitor.Application answers a pre-commands request with a message to the caller, the
   # mock runs in the worker process, so self() is the worker
   defp reply_pre_commands(result) do
