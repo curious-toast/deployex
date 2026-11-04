@@ -5330,7 +5330,7 @@ defmodule Deployer.EngineTest do
 
   describe "Every instance follows the target version" do
     # Three replicas already run 1.0.0. Each sname reports the version its deployment recorded
-    defp start_replicas_on_one_version(name) do
+    defp start_replicas_on_one_version(name, deploy_rollback_timeout_ms \\ 60_000) do
       test_pid = self()
       snames = for _ <- 1..3, do: Catalog.create_sname(name)
       Enum.each(snames, &FixtureFiles.create_bin_files/1)
@@ -5353,6 +5353,11 @@ defmodule Deployer.EngineTest do
         :ets.insert(versions, {sname, version})
         :ok
       end)
+      |> stub(:current_version_map, fn sname ->
+        [{^sname, version}] = :ets.lookup(versions, sname)
+        %Catalog.Version{version: version, sname: sname}
+      end)
+      |> stub(:add_ghosted_version, fn version_map -> {:ok, [version_map]} end)
 
       Deployer.MonitorMock
       |> stub(:start_service, fn %{sname: sname} ->
@@ -5373,7 +5378,7 @@ defmodule Deployer.EngineTest do
       assert {:ok, worker_pid} =
                Engine.Worker.start_link(%Engine.Worker{
                  replicas: 3,
-                 deploy_rollback_timeout_ms: 60_000,
+                 deploy_rollback_timeout_ms: deploy_rollback_timeout_ms,
                  deploy_schedule_interval_ms: 50,
                  name: name,
                  language: "elixir"
@@ -5447,6 +5452,40 @@ defmodule Deployer.EngineTest do
                    :ets.lookup(versions, sname) == [{sname, "1.0.0"}]
                  end)
         end
+      end
+    end
+
+    @tag :capture_log
+    test "With three replicas, an instance on a version that instance 2 ghosted follows current.json back" do
+      name = "myelixir"
+      set_version = switchable_version_map("1.0.0")
+
+      with_mock System, [:passthrough],
+        cmd: fn "tar", ["-x", "-f", _source_path, "-C", _dest_path] -> {"", 0} end do
+        {worker_pid, versions} = start_replicas_on_one_version(name, 300)
+
+        set_version.("2.0.0")
+        assert_receive {:started, first_sname}, 1_000
+        Engine.notify_application_running(first_sname)
+
+        # Instance 2 never reports running, so its window ghosts 2.0.0
+        assert_receive {:started, _second_sname}, 1_000
+        await_state(worker_pid, &match?([%{version: "2.0.0"}], &1.ghosted_version_list))
+
+        # The target is ghosted, so instance 1 keeps 2.0.0 until the pipeline moves current.json
+        refute_receive {:started, _sname}, 300
+        assert [{^first_sname, "2.0.0"}] = :ets.lookup(versions, first_sname)
+
+        set_version.("1.0.0")
+        assert_receive {:started, rollback_sname}, 1_000
+        Engine.notify_application_running(rollback_sname)
+
+        state = await_state(worker_pid, &(&1.current == 2))
+        assert %{1 => %{sname: ^rollback_sname}} = state.deployments
+
+        assert Enum.all?(state.deployments, fn {_instance, %{sname: sname}} ->
+                 :ets.lookup(versions, sname) == [{sname, "1.0.0"}]
+               end)
       end
     end
   end
