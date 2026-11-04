@@ -5517,6 +5517,82 @@ defmodule Deployer.EngineTest do
         assert %{current: 1} = :sys.get_state(worker_pid)
       end
     end
+
+    @tag :capture_log
+    test "With three replicas, an engine worker restart on two versions fills the instance it leaves empty" do
+      name = "myelixir"
+      test_pid = self()
+      switchable_version_map("1.0.0")
+      [upgraded, first_old, second_old] = snames = for _ <- 1..3, do: Catalog.create_sname(name)
+      Enum.each(snames, &FixtureFiles.create_bin_files/1)
+      versions = :ets.new(:versions, [:public])
+      :ets.insert(versions, [{upgraded, "2.0.0"}, {first_old, "1.0.0"}, {second_old, "1.0.0"}])
+      stub_full_deployments()
+
+      # current.json went back to 1.0.0 after instance 1 took 2.0.0, and the monitors still run
+      Deployer.StatusMock
+      |> expect(:list_installed_apps, fn _name -> snames end)
+      |> expect(:history_version_list, fn _name, _options ->
+        [
+          %Catalog.Version{version: "2.0.0", sname: upgraded},
+          %Catalog.Version{version: "1.0.0", sname: second_old},
+          %Catalog.Version{version: "1.0.0", sname: first_old}
+        ]
+      end)
+      |> stub(:current_version, fn sname ->
+        case :ets.lookup(versions, sname) do
+          [{^sname, version}] -> version
+          [] -> nil
+        end
+      end)
+      |> stub(:set_current_version_map, fn sname, %{version: version}, _attrs ->
+        :ets.insert(versions, {sname, version})
+        :ok
+      end)
+
+      Deployer.MonitorMock
+      |> stub(:start_service, fn %{sname: sname} ->
+        if sname in snames do
+          {:error, {:already_started, self()}}
+        else
+          send(test_pid, {:started, sname})
+          {:ok, self()}
+        end
+      end)
+      |> stub(:state, fn sname ->
+        if sname in snames,
+          do: %Deployer.Monitor{sname: sname, current_pid: self(), status: :running, ports: []},
+          else: %Deployer.Monitor{}
+      end)
+      |> stub(:stop_service, fn _name, _sname -> :ok end)
+
+      with_mock System, [:passthrough],
+        cmd: fn "tar", ["-x", "-f", _source_path, "-C", _dest_path] -> {"", 0} end do
+        assert {:ok, worker_pid} =
+                 Engine.Worker.start_link(%Engine.Worker{
+                   replicas: 3,
+                   deploy_rollback_timeout_ms: 60_000,
+                   deploy_schedule_interval_ms: 50,
+                   name: name,
+                   language: "elixir"
+                 })
+
+        # Instance 1 goes back to 1.0.0, then the empty instance gets 1.0.0
+        assert_receive {:started, rollback_sname}, 1_000
+        Engine.notify_application_running(rollback_sname)
+        assert_receive {:started, filled_sname}, 1_000
+        Engine.notify_application_running(filled_sname)
+
+        state = await_state(worker_pid, &(&1.current == 1))
+
+        assert %{1 => %{sname: ^rollback_sname}, 3 => %{sname: ^filled_sname}} =
+                 state.deployments
+
+        assert Enum.all?(state.deployments, fn {_instance, %{sname: sname}} ->
+                 :ets.lookup(versions, sname) == [{sname, "1.0.0"}]
+               end)
+      end
+    end
   end
 
   # Monitor.Application answers a pre-commands request with a message to the caller, the

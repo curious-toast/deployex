@@ -895,14 +895,13 @@ defmodule Deployer.Engine.Worker do
         put_in(state.deployments[current].state, :init)
 
       # An idle rollout moves to a sname that a restart kept stopped, or to an instance that
-      # replicas added. An armed rollback timer means a running report is still due, even after a
-      # hot upgrade
+      # replicas added. An armed rollback timer means a running report is still due
       waiting != nil and is_nil(state.deployments[current].timer_ref) ->
         Logger.info(" # Moving to the waiting instance: #{waiting}")
         %{state | current: waiting}
 
-      # An idle rollout moves to an instance on another version, as when the target goes back
-      # during a rollout, so the instances that took the version follow the target
+      # An idle rollout moves to an instance that does not run the target, as when the target goes
+      # back during a rollout, so the instances that took the version follow the target
       release_version != nil and not ghosted_version? and
           is_nil(state.deployments[current].timer_ref) ->
         move_to_off_target_instance(state, release_version)
@@ -916,7 +915,11 @@ defmodule Deployer.Engine.Worker do
     off_target =
       Enum.find(1..state.replicas, fn instance ->
         case state.deployments[instance] do
-          %Engine.Deployment{state: :active, sname: sname} when sname != nil ->
+          # A start up with a fallback leaves an instance it had no sname for empty and active
+          %Engine.Deployment{state: :active, sname: nil} ->
+            true
+
+          %Engine.Deployment{state: :active, sname: sname} ->
             Status.current_version(sname) != release_version
 
           _deployment ->
