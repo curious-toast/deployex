@@ -83,6 +83,7 @@ defmodule DeployexWeb.UI.ComponentsTest do
           <:button>AD</:button>
           <Menu.item href="/users/log_out" method="delete">Log out</Menu.item>
           <Menu.item phx-click="noop">Act</Menu.item>
+          <Menu.item class="justify-between" phx-click="noop">Spread</Menu.item>
         </Menu.menu>
         """)
 
@@ -99,7 +100,10 @@ defmodule DeployexWeb.UI.ComponentsTest do
       # The Menu hook runs data-close when an item is clicked, and it hides the panel
       [_all, close] = Regex.run(~r/data-close="([^"]+)"/, html)
       assert close |> String.replace("&quot;", ~s(")) =~ ~s("hide",{"to":"#account-panel"})
-      assert html =~ ~r/class="dx-menu-item"[^>]*phx-click="noop"/
+      assert html =~ ~r/class="dx-menu-item ?"[^>]*phx-click="noop"/
+
+      # A class adds to the item's own, as a second class attribute would be ignored
+      assert html =~ ~r/class="dx-menu-item justify-between" phx-click="noop">\s*Spread/
     end
   end
 

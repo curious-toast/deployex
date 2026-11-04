@@ -68,6 +68,41 @@ defmodule DeployexWeb.Terminal.IndexTest do
   end
 
   @tag :capture_log
+  test "New session lists the instances under their app, and the filter narrows them", %{
+    conn: conn,
+    user: user
+  } do
+    first = Foundation.Catalog.create_sname("myelixir")
+    second = Foundation.Catalog.create_sname("myelixir")
+    single = Foundation.Catalog.create_sname("myerlang")
+    stub(Deployer.MonitorMock, :list, fn -> [first, second, single] end)
+
+    {:ok, view, _html} = live(conn, ~p"/terminal")
+
+    # Two instances go under a header, and an app with one instance stays a single row
+    assert has_element?(view, "#new-app-myelixir .dx-drop-h")
+    assert has_element?(view, ~s(#new-app-myelixir [id="new-#{first}"]))
+    assert has_element?(view, ~s(#new-app-myelixir [id="new-#{second}"]))
+    refute has_element?(view, "#new-app-myerlang .dx-drop-h")
+    assert has_element?(view, ~s(#new-app-myerlang [id="new-#{single}"]))
+
+    view |> form("#new-session-filter", %{filter: "MYERL"}) |> render_change()
+    refute has_element?(view, "#new-host")
+    refute has_element?(view, ~s([id="new-#{first}"]))
+    assert has_element?(view, ~s([id="new-#{single}"]))
+
+    view |> form("#new-session-filter", %{filter: "nothing like it"}) |> render_change()
+    assert render(view) =~ "No session matches the filter."
+
+    # Enter opens the first session the filter shows, also before the debounced change arrives
+    view |> form("#new-session-filter", %{filter: "deployex"}) |> render_submit()
+    assert_patch(view, ~p"/terminal?target=deployex")
+    assert [%{target: "deployex"}] = Shell.list(user.username)
+
+    close_all(user.username)
+  end
+
+  @tag :capture_log
   test "a new host shell gets a tab, the header and the shortcuts, and Disconnect ends it", %{
     conn: conn,
     user: user

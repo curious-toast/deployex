@@ -21,6 +21,7 @@ defmodule DeployexWeb.TerminalLive do
       assigns
       |> assign(:active_session, Enum.find(assigns.sessions, &(&1.target == assigns.active)))
       |> assign(:split_session, Enum.find(assigns.sessions, &(&1.target == assigns.split)))
+      |> assign(:new_menu, new_menu(assigns.available, assigns.new_filter))
 
     ~H"""
     <Layouts.app
@@ -95,23 +96,53 @@ defmodule DeployexWeb.TerminalLive do
                 id="new-session"
                 label="New session"
                 button_class="dx-btn"
-                panel_class="left-0 right-auto w-[300px]"
+                panel_class="left-0 right-auto w-[320px]"
               >
                 <:button><Icons.icon name="plus" stroke="2" class="dx-ico size-4" /> New session</:button>
-                <Menu.item
-                  :for={target <- @available}
-                  id={"new-#{target.target}"}
-                  class="justify-between"
-                  phx-click="new"
-                  phx-value-target={target.target}
+                <form
+                  :if={@available != []}
+                  id="new-session-filter"
+                  class="p-1 pb-1.5"
+                  phx-change="new-filter"
+                  phx-submit={JS.push("new-first") |> Menu.close("new-session")}
                 >
-                  <span class="inline-flex items-center gap-2">
-                    <Tags.lang name={target.language} small /><span class="dx-mono text-[0.8125rem]">{target.title}</span>
-                  </span>
-                  <span class="dx-muted text-xs">{target.kind}</span>
-                </Menu.item>
+                  <input
+                    type="search"
+                    name="filter"
+                    value={@new_filter}
+                    class="dx-input h-8 text-[0.8125rem]"
+                    placeholder="Filter by app or instance"
+                    aria-label="Filter the sessions"
+                    autocomplete="off"
+                    phx-debounce="100"
+                  />
+                </form>
+                <div class="max-h-[min(60vh,420px)] overflow-y-auto">
+                  <.new_item :for={target <- @new_menu.pinned} target={target} />
+                  <div
+                    :for={group <- @new_menu.apps}
+                    id={"new-app-#{group.app}"}
+                    role="group"
+                    aria-label={group.app}
+                  >
+                    <div
+                      :if={group.header}
+                      class="dx-drop-h flex items-center gap-2 normal-case"
+                      aria-hidden="true"
+                    >
+                      <Tags.lang name={group.language} small />{group.app}
+                    </div>
+                    <.new_item :for={target <- group.targets} target={target} nested={group.header} />
+                  </div>
+                </div>
                 <p :if={@available == []} class="dx-muted p-2.5 text-[0.8125rem]">
                   Every session is open.
+                </p>
+                <p
+                  :if={@available != [] and @new_menu.pinned == [] and @new_menu.apps == []}
+                  class="dx-muted p-2.5 text-[0.8125rem]"
+                >
+                  No session matches the filter.
                 </p>
               </Menu.menu>
             </div>
@@ -254,6 +285,7 @@ defmodule DeployexWeb.TerminalLive do
      |> assign(:attached, %{})
      |> assign(:split, nil)
      |> assign(:picking, false)
+     |> assign(:new_filter, "")
      |> assign(:page_title, "Terminal")
      |> assign(:current_path, "/terminal")
      |> load_sessions()}
@@ -311,10 +343,32 @@ defmodule DeployexWeb.TerminalLive do
   def handle_event("unsplit", _params, %{assigns: %{active: active}} = socket),
     do: {:noreply, push_patch(socket, to: pane_path(active, nil))}
 
+  def handle_event("new-filter", %{"filter" => filter}, socket),
+    do: {:noreply, assign(socket, :new_filter, filter)}
+
+  # Enter in the filter opens the first session it shows
+  # The submit carries the filter, which a debounced change may not have sent yet
+  def handle_event("new-first", params, %{assigns: assigns} = socket) do
+    case new_menu(assigns.available, params["filter"] || assigns.new_filter) do
+      %{pinned: [target | _]} ->
+        handle_event("new", %{"target" => target.target}, socket)
+
+      %{apps: [%{targets: [target | _]} | _]} ->
+        handle_event("new", %{"target" => target.target}, socket)
+
+      _none ->
+        {:noreply, socket}
+    end
+  end
+
   def handle_event("new", %{"target" => target}, %{assigns: %{user: user}} = socket) do
     case Shell.open(user, target) do
       {:ok, _session} ->
-        {:noreply, socket |> load_sessions() |> push_patch(to: ~p"/terminal?target=#{target}")}
+        {:noreply,
+         socket
+         |> assign(:new_filter, "")
+         |> load_sessions()
+         |> push_patch(to: ~p"/terminal?target=#{target}")}
 
       {:error, reason} ->
         {:noreply,
@@ -461,10 +515,10 @@ defmodule DeployexWeb.TerminalLive do
   end
 
   defp target("host", host_name),
-    do: %{target: "host", title: host_name, kind: "Host shell", language: "linux"}
+    do: %{target: "host", title: host_name, app: nil, kind: "Host shell", language: "linux"}
 
   defp target("deployex", _host_name),
-    do: %{target: "deployex", title: "deployex", kind: "IEx", language: "deployex"}
+    do: %{target: "deployex", title: "deployex", app: nil, kind: "IEx", language: "deployex"}
 
   defp target(sname, _host_name) do
     language =
@@ -476,9 +530,60 @@ defmodule DeployexWeb.TerminalLive do
     %{
       target: sname,
       title: sname,
+      app: Instances.app(sname) || sname,
       kind: if(language == "elixir", do: "IEx", else: "Erlang shell"),
       language: language
     }
+  end
+
+  # The New session menu: the host and DeployEx first, then the instances under their app. The filter
+  # keeps the targets whose name, app or kind holds its text, in any case, like the top bar search
+  defp new_menu(available, filter) do
+    needle = filter |> String.trim() |> String.downcase()
+
+    shown =
+      Enum.filter(
+        available,
+        &String.contains?(String.downcase("#{&1.title} #{&1.app} #{&1.kind}"), needle)
+      )
+
+    {pinned, instances} = Enum.split_with(shown, &is_nil(&1.app))
+
+    apps =
+      instances
+      |> Enum.group_by(& &1.app)
+      |> Enum.sort_by(&elem(&1, 0))
+      |> Enum.map(fn {app, targets} ->
+        targets = Enum.sort_by(targets, & &1.title)
+
+        %{
+          app: app,
+          language: hd(targets).language,
+          header: length(targets) > 1,
+          targets: targets
+        }
+      end)
+
+    %{pinned: pinned, apps: apps}
+  end
+
+  attr :target, :map, required: true
+  attr :nested, :boolean, default: false
+
+  defp new_item(assigns) do
+    ~H"""
+    <Menu.item
+      id={"new-#{@target.target}"}
+      class={["justify-between", @nested && "pl-6"]}
+      phx-click="new"
+      phx-value-target={@target.target}
+    >
+      <span class="inline-flex min-w-0 items-center gap-2">
+        <Tags.lang :if={!@nested} name={@target.language} small /><span class="dx-mono truncate text-[0.8125rem]">{@target.title}</span>
+      </span>
+      <span class="dx-muted text-xs whitespace-nowrap">{@target.kind}</span>
+    </Menu.item>
+    """
   end
 
   defp title("host", host_name), do: host_name

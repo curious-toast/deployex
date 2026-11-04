@@ -54,22 +54,21 @@ defmodule DeployexWeb.UI.Menu do
   @doc """
   A full-width row in a menu panel. Pass `href` or `navigate` for a link, nothing for a button.
   """
+  attr :class, :any, default: nil
   attr :rest, :global, include: ~w(href navigate method download)
   slot :inner_block, required: true
 
   def item(%{rest: rest} = assigns) when is_map_key(rest, :href) or is_map_key(rest, :navigate) do
     ~H"""
-    <.link class={item_class()} {@rest}>{render_slot(@inner_block)}</.link>
+    <.link class={["dx-menu-item", @class]} {@rest}>{render_slot(@inner_block)}</.link>
     """
   end
 
   def item(assigns) do
     ~H"""
-    <button type="button" class={item_class()} {@rest}>{render_slot(@inner_block)}</button>
+    <button type="button" class={["dx-menu-item", @class]} {@rest}>{render_slot(@inner_block)}</button>
     """
   end
-
-  defp item_class, do: "dx-menu-item"
 
   defp toggle(id) do
     JS.toggle(to: "##{id}-panel")
@@ -77,8 +76,12 @@ defmodule DeployexWeb.UI.Menu do
     |> JS.focus_first(to: "##{id}-panel")
   end
 
-  defp close(id) do
-    JS.hide(to: "##{id}-panel")
+  @doc """
+  Closes the menu, for an action in its panel that is not an item, like a form submit.
+  """
+  def close(js \\ %JS{}, id) do
+    js
+    |> JS.hide(to: "##{id}-panel")
     |> JS.set_attribute({"aria-expanded", "false"}, to: "##{id}-button")
   end
 end
