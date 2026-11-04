@@ -9,13 +9,14 @@ defmodule DeployexWeb.DockLive do
   use DeployexWeb, :live_view
 
   alias DeployexWeb.HostTime
+  alias DeployexWeb.Instances
+  alias DeployexWeb.LogLines
   alias DeployexWeb.LogsExport
   alias DeployexWeb.Shell
   alias DeployexWeb.UI.Icons
   alias DeployexWeb.UI.LogActions
   alias DeployexWeb.UI.ShellHelp
   alias DeployexWeb.UI.Tags
-  alias Foundation.Catalog
   alias Sentinel.Logs
 
   @log_minutes 30
@@ -340,7 +341,7 @@ defmodule DeployexWeb.DockLive do
               <span style={"color: #{if line.type == "stderr", do: "var(--dx-error-text)", else: "var(--dx-muted)"}"}>
                 {line.type}
               </span>
-              <span class="dx-k-msg" style={"color: #{message_color(line)}"} phx-no-format>{line.text}</span>
+              <span class="dx-k-msg" style={"color: #{LogLines.color(line)}"} phx-no-format>{line.text}</span>
             </div>
           </div>
           <p :if={@tab.empty} class="dx-muted p-3.5 text-[0.8125rem]">
@@ -519,9 +520,7 @@ defmodule DeployexWeb.DockLive do
       when source_node == node() do
     socket =
       tabs
-      |> Enum.filter(
-        &(&1.kind == :logs and &1.whole_app and String.starts_with?(sname, "#{&1.target}-"))
-      )
+      |> Enum.filter(&(&1.kind == :logs and &1.whole_app and Instances.app(sname) == &1.target))
       |> Enum.reduce(socket, fn tab, socket ->
         snames = Enum.uniq(log_snames(tab.target, tab.app) ++ [sname])
         update_tab(socket, tab.id, &%{&1 | snames: snames})
@@ -581,7 +580,7 @@ defmodule DeployexWeb.DockLive do
       target: target,
       app: app || app_of(target),
       label: "Logs",
-      language: language(app || target),
+      language: Instances.language(app || target),
       snames: snames,
       whole_app: whole_app,
       types: @types,
@@ -602,7 +601,7 @@ defmodule DeployexWeb.DockLive do
           target: target,
           app: app || app_of(target),
           label: if(session.kind == :iex, do: "IEx", else: "Erlang shell"),
-          language: language(app || target),
+          language: Instances.language(app || target),
           session: session
         }
 
@@ -635,14 +634,7 @@ defmodule DeployexWeb.DockLive do
 
   defp shell_error(target, reason), do: "Could not open a shell on #{target}: #{inspect(reason)}"
 
-  defp app_of("deployex"), do: "deployex"
-
-  defp app_of(target) do
-    case Catalog.node_info(target) do
-      %{name: name} -> name
-      _ -> target
-    end
-  end
+  defp app_of(target), do: Instances.app(target) || target
 
   # What the split picker offers beside a tab: its own logs or shell first, then the app's other
   # instances, then the logs of every instance, then the tabs open already
@@ -660,7 +652,7 @@ defmodule DeployexWeb.DockLive do
         target: target,
         app: active.app,
         note: note,
-        language: language(active.app),
+        language: Instances.language(active.app),
         label: option_label(kind, active.app)
       }
     end)
@@ -701,16 +693,14 @@ defmodule DeployexWeb.DockLive do
   defp option_label("logs", _app), do: "Logs"
 
   defp option_label("shell", app),
-    do: if(language(app) == "elixir" or app == "deployex", do: "IEx", else: "Erlang shell")
+    do:
+      if(Instances.language(app) == "elixir" or app == "deployex",
+        do: "IEx",
+        else: "Erlang shell"
+      )
 
   # The running instances of an app, by name
-  defp instances("deployex"), do: []
-
-  defp instances(app) do
-    Deployer.Monitor.list()
-    |> Enum.map(&to_string/1)
-    |> Enum.filter(&String.starts_with?(&1, "#{app}-"))
-  end
+  defp instances(app), do: Instances.of_app(app)
 
   defp activate(socket, id) do
     socket
@@ -770,7 +760,7 @@ defmodule DeployexWeb.DockLive do
           lines =
             tab.buffer
             |> Enum.reverse()
-            |> Enum.filter(&(&1.type in tab.types and holds?(&1, tab.filter)))
+            |> Enum.filter(&(&1.type in tab.types and LogLines.holds?(&1, tab.filter)))
 
           socket
           |> stream(pane, lines, reset: true, limit: -@log_cap)
@@ -858,10 +848,7 @@ defmodule DeployexWeb.DockLive do
 
   # The logs of one instance, or of every instance of an app
   defp log_snames(target, app) when target == app do
-    case Enum.filter(
-           Enum.map(Deployer.Monitor.list(), &to_string/1),
-           &String.starts_with?(&1, "#{app}-")
-         ) do
+    case Instances.of_app(app) do
       [] -> [target]
       snames -> snames
     end
@@ -869,61 +856,38 @@ defmodule DeployexWeb.DockLive do
 
   defp log_snames(target, _app), do: [target]
 
-  # The read can hold lines that also wait in the queue. For each instance and stream, the tab keeps the
-  # time of the newest message it read and the messages at that time, and skips them when they come again
+  # The read marks skip a line that the read holds and the queue holds too
   defp read_buffer(tab) do
-    reads =
+    pairs =
       for sname <- tab.snames,
           type <- Logs.get_types_by_sname(sname),
-          (type = to_string(type)) in @types do
-        {{sname, type},
-         Logs.list_data_by_sname_log_type(sname, type,
-           from: @log_minutes,
-           order: :asc,
-           limit: @log_cap
-         )}
-      end
+          (type = to_string(type)) in @types,
+          do: {sname, type}
+
+    {reads, marks} =
+      LogLines.read(pairs, from: @log_minutes, order: :asc, limit: @log_cap)
 
     buffer =
       reads
       |> Enum.flat_map(fn {{sname, type}, messages} ->
-        lines(sname, type, messages, tab.whole_app)
+        LogLines.from_messages(sname, type, messages, %{many: tab.whole_app})
       end)
       |> Enum.sort_by(& &1.timestamp)
       |> Enum.take(-@log_cap)
       |> Enum.reverse()
 
-    %{
-      tab
-      | buffer: buffer,
-        read_marks: Map.new(reads, fn {pair, messages} -> {pair, mark(messages)} end)
-    }
-  end
-
-  defp mark([]), do: {0, []}
-
-  defp mark(messages) do
-    newest = messages |> Enum.map(& &1.timestamp) |> Enum.max()
-    {newest, for(%{timestamp: ^newest, log: log} <- messages, do: log)}
-  end
-
-  defp read?(marks, sname, type, %{timestamp: timestamp, log: log}) do
-    case Map.get(marks, {sname, type}, {0, []}) do
-      {newest, _logs} when timestamp < newest -> true
-      {newest, logs} when timestamp == newest -> log in logs
-      _later -> false
-    end
+    %{tab | buffer: buffer, read_marks: marks}
   end
 
   defp add_lines(socket, %{kind: :logs} = tab, arrived) do
     lines =
       for {sname, type, message} <- arrived,
           sname in tab.snames,
-          not read?(tab.read_marks, sname, type, message),
-          line <- lines(sname, type, [message], tab.whole_app),
+          not LogLines.read?(tab.read_marks, sname, type, message),
+          line <- LogLines.from_messages(sname, type, [message], %{many: tab.whole_app}),
           do: line
 
-    shown = Enum.filter(lines, &(&1.type in tab.types and holds?(&1, tab.filter)))
+    shown = Enum.filter(lines, &(&1.type in tab.types and LogLines.holds?(&1, tab.filter)))
     pane = pane_stream(socket.assigns, tab.id)
 
     socket =
@@ -948,40 +912,6 @@ defmodule DeployexWeb.DockLive do
 
   defp add_lines(socket, _shell_tab, _arrived), do: socket
 
-  # A tab for every instance of an app shows the source of each line
-  defp lines(sname, type, messages, many) do
-    Enum.flat_map(messages, fn %{timestamp: timestamp, log: log} ->
-      (log || "")
-      |> String.split(["\n", "\r"], trim: true)
-      |> Enum.map(fn text ->
-        %{
-          id: System.unique_integer([:positive, :monotonic]),
-          timestamp: timestamp,
-          at: DateTime.from_unix!(timestamp, :millisecond),
-          source: sname,
-          type: type,
-          text: text,
-          many: many
-        }
-      end)
-    end)
-  end
-
-  defp language("deployex"), do: "deployex"
-
-  defp language(name_or_sname) do
-    case Catalog.node_info(name_or_sname) do
-      %{language: language} when language in ["elixir", "erlang", "gleam"] ->
-        language
-
-      _ ->
-        case Enum.find(Catalog.applications(), &(&1.name == name_or_sname)) do
-          %{language: language} -> language
-          _ -> "elixir"
-        end
-    end
-  end
-
   defp logs_subtitle(%{whole_app: true, target: app}), do: "every instance of #{app}"
   defp logs_subtitle(%{target: target}), do: target
 
@@ -1003,16 +933,6 @@ defmodule DeployexWeb.DockLive do
     })
   end
 
-  # A line holds the filter text in its message or its source, in any case
-  defp holds?(_line, ""), do: true
-
-  defp holds?(line, filter) do
-    needle = String.downcase(filter)
-
-    String.contains?(String.downcase(line.text), needle) or
-      String.contains?(String.downcase(line.source), needle)
-  end
-
   defp close_label(%{kind: :shell, label: label, target: target}),
     do: "End the #{label} session on #{target}"
 
@@ -1022,16 +942,6 @@ defmodule DeployexWeb.DockLive do
     case Enum.count(tabs, &(&1.kind == :shell)) do
       1 -> "1 shell session"
       count -> "#{count} shell sessions"
-    end
-  end
-
-  defp message_color(%{type: "stderr"}), do: "var(--dx-error-text)"
-
-  defp message_color(%{text: text}) do
-    cond do
-      String.contains?(text, "[error]") -> "var(--dx-error-text)"
-      String.contains?(text, "[warning]") -> "var(--dx-warning-text)"
-      true -> "var(--dx-base-content)"
     end
   end
 end

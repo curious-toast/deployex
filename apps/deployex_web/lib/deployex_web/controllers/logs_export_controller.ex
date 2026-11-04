@@ -5,18 +5,18 @@ defmodule DeployexWeb.LogsExportController do
   """
   use DeployexWeb, :controller
 
+  alias DeployexWeb.Instances
   alias DeployexWeb.LogsExport
 
   def export(conn, params) do
     format = if params["format"] == "jsonl", do: "jsonl", else: "log"
-    {:ok, host} = :inet.gethostname()
 
     conn =
       conn
       |> content_type(format)
       |> put_resp_header(
         "content-disposition",
-        ~s(attachment; filename="#{LogsExport.filename(to_string(host), format)}")
+        ~s(attachment; filename="#{LogsExport.filename(Instances.host_name(), format)}")
       )
       |> send_chunked(200)
 

@@ -7,6 +7,7 @@ defmodule DeployexWeb.TerminalLive do
   use DeployexWeb, :live_view
 
   alias Deployer.Monitor
+  alias DeployexWeb.Instances
   alias DeployexWeb.Shell
   alias DeployexWeb.UI.Icons
   alias DeployexWeb.UI.Menu
@@ -248,7 +249,7 @@ defmodule DeployexWeb.TerminalLive do
     {:ok,
      socket
      |> assign(:user, user_key(socket.assigns.current_user))
-     |> assign(:host_name, host_name())
+     |> assign(:host_name, Instances.host_name())
      |> assign(:help_open, true)
      |> assign(:attached, %{})
      |> assign(:split, nil)
@@ -415,7 +416,7 @@ defmodule DeployexWeb.TerminalLive do
   # What the picker offers beside a session: the other instances of its app first, then DeployEx, this
   # host, and the sessions open already
   defp split_options(active, sessions, available, host_name) do
-    app = app_of(active.target)
+    app = Instances.app(active.target)
 
     open =
       Enum.map(sessions, fn session ->
@@ -430,7 +431,7 @@ defmodule DeployexWeb.TerminalLive do
     known = Map.new(open ++ available, &{&1.target, &1})
 
     siblings =
-      for {target, option} <- known, app && String.starts_with?(target, "#{app}-"), do: option
+      for {target, option} <- known, app && Instances.app(target) == app, do: option
 
     others = for target <- ["deployex", Shell.host()], option = known[target], do: option
 
@@ -442,13 +443,6 @@ defmodule DeployexWeb.TerminalLive do
        Enum.map(open, &Map.put(&1, :note, "open")))
     |> Enum.uniq_by(& &1.target)
     |> Enum.reject(&(&1.target == active.target))
-  end
-
-  defp app_of(target) do
-    case Catalog.node_info(target) do
-      %{name: name} -> name
-      _ -> nil
-    end
   end
 
   defp pane_path(target, nil), do: ~p"/terminal?#{%{target: target}}"
@@ -498,9 +492,4 @@ defmodule DeployexWeb.TerminalLive do
   def user_key(%{username: username}) when is_binary(username), do: username
   def user_key(%{email: email}) when is_binary(email), do: email
   def user_key(_user), do: "unknown"
-
-  defp host_name do
-    {:ok, name} = :inet.gethostname()
-    to_string(name)
-  end
 end

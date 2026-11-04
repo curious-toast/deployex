@@ -12,6 +12,8 @@ defmodule DeployexWeb.LogsLive do
   use DeployexWeb, :live_view
 
   alias DeployexWeb.HostTime
+  alias DeployexWeb.Instances
+  alias DeployexWeb.LogLines
   alias DeployexWeb.LogsExport
   alias DeployexWeb.RecentEvents
   alias DeployexWeb.UI.Icons
@@ -24,7 +26,6 @@ defmodule DeployexWeb.LogsLive do
 
   alias Deployer.Monitor
   alias DeployexWeb.UI.Tags
-  alias Foundation.Catalog
   alias Sentinel.Logs
 
   @cap 2_000
@@ -225,7 +226,7 @@ defmodule DeployexWeb.LogsLive do
                 <span style={"color: #{if line.type == "stderr", do: "var(--dx-error-text)", else: "var(--dx-muted)"}"}>
                   {line.type}
                 </span>
-                <span class="dx-lmsg" style={"color: #{message_color(line)}"} phx-no-format>{highlight(line.text, @filter)}</span>
+                <span class="dx-lmsg" style={"color: #{LogLines.color(line)}"} phx-no-format>{highlight(line.text, @filter)}</span>
               </div>
             </div>
             <p :if={@shown == 0} class="dx-muted px-[18px] py-6 text-[0.8125rem]">
@@ -366,12 +367,13 @@ defmodule DeployexWeb.LogsLive do
   def mount(_params, _session, socket) do
     {:ok,
      socket
-     |> assign(:host_name, host_name())
+     |> assign(:host_name, Instances.host_name())
      |> assign(:zone, HostTime.zone())
      |> assign(:filter, "")
      |> assign(:paused, false)
      |> assign(:pending, [])
      |> assign(:queued, [])
+     |> assign(:read_marks, %{})
      |> assign(:flushing, false)
      |> assign(:buffer, [])
      |> assign(:shown, 0)
@@ -494,11 +496,16 @@ defmodule DeployexWeb.LogsLive do
   def handle_info({:recent_notification, _recent}, socket), do: {:noreply, socket}
 
   def handle_info({:logs_new_data, sname, type, message}, %{assigns: assigns} = socket) do
-    lines = lines(sname, type, [message], color(assigns.sources, sname))
+    lines =
+      LogLines.from_messages(sname, type, [message], %{color: color(assigns.sources, sname)})
 
     cond do
       # A line already in the mailbox when Live changed to History, or its source turned off
       assigns.mode != :live or {sname, type} not in assigns.subscribed ->
+        {:noreply, socket}
+
+      # The last read holds it already, as the log server stores a line before it broadcasts it
+      LogLines.read?(assigns.read_marks, sname, type, message) ->
         {:noreply, socket}
 
       assigns.paused ->
@@ -546,27 +553,24 @@ defmodule DeployexWeb.LogsLive do
           assigns.range
       end
 
-    lines =
-      if connected?(socket) do
-        assigns
-        |> pairs()
-        |> Enum.flat_map(fn {sname, type} ->
-          messages =
-            Logs.list_data_by_sname_log_type(sname, type, from: minutes, order: :asc, limit: @cap)
+    {reads, marks} =
+      if connected?(socket),
+        do: LogLines.read(pairs(assigns), from: minutes, order: :asc, limit: @cap),
+        else: {[], %{}}
 
-          lines(sname, type, messages, color(assigns.sources, sname))
-        end)
-        |> Kernel.++(event_lines(assigns, minutes))
-        |> Enum.filter(&(assigns.mode == :history or &1.timestamp > assigns.cleared_at))
-        |> Enum.sort_by(& &1.timestamp)
-        |> Enum.take(-@cap)
-      else
-        []
-      end
+    lines =
+      reads
+      |> Enum.flat_map(fn {{sname, type}, messages} ->
+        LogLines.from_messages(sname, type, messages, %{color: color(assigns.sources, sname)})
+      end)
+      |> Kernel.++(if connected?(socket), do: event_lines(assigns, minutes), else: [])
+      |> Enum.filter(&(assigns.mode == :history or &1.timestamp > assigns.cleared_at))
+      |> Enum.sort_by(& &1.timestamp)
+      |> Enum.take(-@cap)
 
     # The read holds the queued lines too
     socket
-    |> assign(buffer: Enum.reverse(lines), queued: [])
+    |> assign(buffer: Enum.reverse(lines), queued: [], read_marks: marks)
     |> show_lines(Enum.reverse(lines))
   end
 
@@ -587,7 +591,7 @@ defmodule DeployexWeb.LogsLive do
     socket
     |> update(:buffer, &Enum.take(Enum.reverse(lines) ++ &1, @cap))
     |> then(fn socket ->
-      shown = Enum.filter(lines, &shows?(&1, socket.assigns.filter))
+      shown = Enum.filter(lines, &LogLines.holds?(&1, socket.assigns.filter))
 
       socket
       |> stream(:lines, shown, limit: -@cap)
@@ -596,29 +600,11 @@ defmodule DeployexWeb.LogsLive do
   end
 
   defp show_lines(socket, buffer) do
-    shown = buffer |> Enum.reverse() |> Enum.filter(&shows?(&1, socket.assigns.filter))
+    shown = buffer |> Enum.reverse() |> Enum.filter(&LogLines.holds?(&1, socket.assigns.filter))
 
     socket
     |> stream(:lines, shown, reset: true, limit: -@cap)
     |> assign(:shown, length(shown))
-  end
-
-  defp lines(sname, type, messages, color) do
-    Enum.flat_map(messages, fn %{timestamp: timestamp, log: log} ->
-      (log || "")
-      |> String.split(["\n", "\r"], trim: true)
-      |> Enum.map(fn text ->
-        %{
-          id: System.unique_integer([:positive, :monotonic]),
-          timestamp: timestamp,
-          at: DateTime.from_unix!(timestamp, :millisecond),
-          source: sname,
-          type: type,
-          text: text,
-          color: color
-        }
-      end)
-    end)
   end
 
   defp sources(mode) do
@@ -636,7 +622,12 @@ defmodule DeployexWeb.LogsLive do
       |> Enum.map(&{&1, Enum.map(Logs.get_types_by_sname(&1), fn type -> to_string(type) end)})
       |> Enum.reject(fn {_sname, types} -> types == [] end)
       |> Enum.map(fn {sname, types} ->
-        %{sname: sname, app: app_of(sname), types: types, lang: language(sname)}
+        %{
+          sname: sname,
+          app: if(sname != "deployex", do: Instances.app(sname) || sname),
+          types: types,
+          lang: Instances.language(sname)
+        }
       end)
 
     # One color for each app, so the instances of an app share it
@@ -715,15 +706,6 @@ defmodule DeployexWeb.LogsLive do
       else: MapSet.union(selected, MapSet.new(snames))
   end
 
-  defp app_of("deployex"), do: nil
-
-  defp app_of(sname) do
-    case Catalog.node_info(sname) do
-      %{name: name} when is_binary(name) and name != "" -> name
-      _ -> sname
-    end
-  end
-
   # since (unix seconds) picks the shortest range that still covers that time, like a bell item's
   defp range_since(since, current) do
     with since when is_binary(since) <- since,
@@ -776,15 +758,6 @@ defmodule DeployexWeb.LogsLive do
         do: {sname, type}
   end
 
-  defp language("deployex"), do: "deployex"
-
-  defp language(sname) do
-    case Catalog.node_info(sname) do
-      %{language: language} when language in ["elixir", "erlang", "gleam"] -> language
-      _ -> "deployex"
-    end
-  end
-
   defp color(sources, sname) do
     case Enum.find(sources, &(&1.sname == sname)) do
       %{color: color} -> color
@@ -795,31 +768,6 @@ defmodule DeployexWeb.LogsLive do
   defp toggle(set, value),
     do:
       if(MapSet.member?(set, value), do: MapSet.delete(set, value), else: MapSet.put(set, value))
-
-  defp shows?(_line, ""), do: true
-
-  defp shows?(line, filter) do
-    needle = String.downcase(filter)
-
-    String.contains?(String.downcase(line.text), needle) or
-      String.contains?(String.downcase(line.source), needle)
-  end
-
-  defp message_color(%{type: "stderr"}), do: "var(--dx-error-text)"
-
-  defp message_color(%{type: "event", tone: tone}) when tone in [:error, :ghost],
-    do: "var(--dx-error-text)"
-
-  defp message_color(%{type: "event", tone: :warning}), do: "var(--dx-warning-text)"
-  defp message_color(%{type: "event"}), do: "var(--dx-base-content)"
-
-  defp message_color(%{text: text}) do
-    cond do
-      String.contains?(text, "[error]") -> "var(--dx-error-text)"
-      String.contains?(text, "[warning]") -> "var(--dx-warning-text)"
-      true -> "var(--dx-base-content)"
-    end
-  end
 
   # Marks each match of the filter, in any case. Each part is escaped before it goes in the markup
   defp highlight(text, ""), do: text
@@ -872,10 +820,5 @@ defmodule DeployexWeb.LogsLive do
       filter: assigns.filter
     })
     |> LogsExport.params()
-  end
-
-  defp host_name do
-    {:ok, name} = :inet.gethostname()
-    to_string(name)
   end
 end

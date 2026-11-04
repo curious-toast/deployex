@@ -9,6 +9,7 @@ defmodule DeployexWeb.ApplicationsLive do
   alias DeployexWeb.ApplicationsLive.Filter
   alias DeployexWeb.ApplicationsLive.View
   alias DeployexWeb.Components.ConfigChangesModal
+  alias DeployexWeb.Instances
   alias Sentinel.Config.Watcher
 
   @deployex_terminate_delay 300
@@ -100,7 +101,7 @@ defmodule DeployexWeb.ApplicationsLive do
     {:ok,
      socket
      |> assign(:node, Node.self())
-     |> assign(:host_name, host_name())
+     |> assign(:host_name, Instances.host_name())
      |> assign_statuses(statuses)
      |> assign(:open, MapSet.new())
      |> assign(:limits_open, %{})
@@ -310,11 +311,6 @@ defmodule DeployexWeb.ApplicationsLive do
 
   defp pending_count(%{pending_config_changes: %{changes_count: count}}), do: count
   defp pending_count(_yaml_config), do: 0
-
-  defp host_name do
-    {:ok, name} = :inet.gethostname()
-    to_string(name)
-  end
 
   defp default_yaml_config do
     %{

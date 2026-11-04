@@ -119,6 +119,27 @@ defmodule DeployexWeb.Logs.IndexTest do
   end
 
   @tag :capture_log
+  test "a line that the read holds and that also arrives as a message shows once", %{
+    conn: conn,
+    sname: sname
+  } do
+    stored = message("stored once")
+    stub(Deployer.MonitorMock, :list, fn -> [sname] end)
+    stub_logs(self(), %{{sname, "stdout"} => [stored]})
+
+    {:ok, view, _html} = live(conn, ~p"/logs/live?source=#{sname}")
+
+    # The log server stores a line before it broadcasts it, so the read and the mailbox both hold it
+    send(view.pid, {:logs_new_data, sname, "stdout", stored})
+    send(view.pid, {:logs_new_data, sname, "stdout", message("newer", 0)})
+    send(view.pid, :flush_lines)
+
+    html = view |> element("#logs-lines") |> render()
+    assert [_once] = Regex.scan(~r/stored once/, html)
+    assert html =~ "newer"
+  end
+
+  @tag :capture_log
   test "Pause keeps the new lines for Resume, and Clear empties the view", %{
     conn: conn,
     sname: sname

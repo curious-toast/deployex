@@ -60,7 +60,7 @@ defmodule DeployexWeb.LogsExportTest do
   } do
     lines = lines(%{"source" => "#{sname},deployex", "minutes" => "15"})
 
-    assert Enum.map(lines, &{&1.source, &1.stream, &1.text}) == [
+    assert Enum.map(lines, &{&1.source, &1.type, &1.text}) == [
              {sname, "stdout", "first"},
              {"deployex", "stderr", "[error] boom"},
              {sname, "stdout", "second"},
@@ -118,7 +118,7 @@ defmodule DeployexWeb.LogsExportTest do
 
     lines = lines(%{"source" => "events", "filter" => "export-test-abc"})
 
-    assert [%{source: "events", stream: "event", text: "export-test-abc crash restart" <> _}] =
+    assert [%{source: "events", type: "event", text: "export-test-abc crash restart" <> _}] =
              lines
   end
 
@@ -127,7 +127,7 @@ defmodule DeployexWeb.LogsExportTest do
       %{
         at: ~U[2026-10-29 14:18:19.123Z],
         source: "myapp-abc",
-        stream: "stderr",
+        type: "stderr",
         text: "[error] \"boom\""
       }
     ]

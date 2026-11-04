@@ -6,6 +6,7 @@ defmodule DeployexWeb.LogsExport do
   A line is written as plain text (`.log`) or as one JSON object (`.jsonl`).
   """
 
+  alias DeployexWeb.LogLines
   alias DeployexWeb.RecentEvents
   alias Foundation.Notifications.Recent
   alias Sentinel.Logs
@@ -15,7 +16,7 @@ defmodule DeployexWeb.LogsExport do
   @max_minutes 10_080
   @minute_ms 60_000
 
-  @type line :: %{at: DateTime.t(), source: String.t(), stream: String.t(), text: String.t()}
+  @type line :: %{at: DateTime.t(), source: String.t(), type: String.t(), text: String.t()}
 
   @doc """
   Returns the params of an export link, for `/logs/export`. The time window is `minutes`, the last minutes
@@ -44,7 +45,7 @@ defmodule DeployexWeb.LogsExport do
     sources = known_sources(list(params["source"]))
     types = Enum.filter(list(params["stream"]), &(&1 in @types))
     types = if types == [], do: @types, else: types
-    filter = String.downcase(params["filter"] || "")
+    filter = params["filter"] || ""
     to = System.os_time(:millisecond) + 1
     from = to - minutes(params) * @minute_ms
 
@@ -63,7 +64,7 @@ defmodule DeployexWeb.LogsExport do
       window = {start, min(start + @minute_ms, to)}
 
       (log_lines(pairs, window) ++ event_lines(events, window))
-      |> Enum.filter(&holds?(&1, filter))
+      |> Enum.filter(&LogLines.holds?(&1, filter))
       |> Enum.sort_by(&DateTime.to_unix(&1.at, :microsecond))
     end)
     |> Stream.reject(&(&1 == []))
@@ -80,7 +81,7 @@ defmodule DeployexWeb.LogsExport do
           Jason.OrderedObject.new(
             at: DateTime.to_iso8601(line.at),
             source: line.source,
-            stream: line.stream,
+            stream: line.type,
             message: line.text
           )
         ),
@@ -92,7 +93,7 @@ defmodule DeployexWeb.LogsExport do
   def render(lines, _log) do
     Enum.map(
       lines,
-      &[DateTime.to_iso8601(&1.at), " ", &1.source, " ", &1.stream, " ", &1.text, "\n"]
+      &[DateTime.to_iso8601(&1.at), " ", &1.source, " ", &1.type, " ", &1.text, "\n"]
     )
   end
 
@@ -141,25 +142,20 @@ defmodule DeployexWeb.LogsExport do
 
   defp log_lines(pairs, window) do
     for {sname, type} <- pairs,
-        %{timestamp: timestamp, log: log} <-
-          Logs.list_data_by_sname_log_type(sname, type, between: window, order: :asc),
-        text <- String.split(log || "", ["\n", "\r"], trim: true) do
-      %{at: DateTime.from_unix!(timestamp, :millisecond), source: sname, stream: type, text: text}
-    end
+        line <-
+          LogLines.from_messages(
+            sname,
+            type,
+            Logs.list_data_by_sname_log_type(sname, type, between: window, order: :asc)
+          ),
+        do: line
   end
 
   defp event_lines(events, {from, to}) do
     for %Recent{at: at} = recent <- events,
         DateTime.to_unix(at, :millisecond) in from..(to - 1)//1 do
       {_tone, text} = RecentEvents.line(recent)
-      %{at: at, source: "events", stream: "event", text: text}
+      %{at: at, source: "events", type: "event", text: text}
     end
   end
-
-  defp holds?(_line, ""), do: true
-
-  defp holds?(line, needle),
-    do:
-      String.contains?(String.downcase(line.text), needle) or
-        String.contains?(String.downcase(line.source), needle)
 end
