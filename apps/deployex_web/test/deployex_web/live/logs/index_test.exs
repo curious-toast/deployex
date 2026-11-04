@@ -64,7 +64,9 @@ defmodule DeployexWeb.Logs.IndexTest do
     html = view |> element("#pick-app-myelixir") |> render_click()
     assert html =~ "GET / [info] Sent 200"
     assert html =~ "second line"
-    assert has_element?(view, "#chip-#{sname}")
+    # One instance, so the chip names the app as the picker did
+    assert view |> element("#chip-app-myelixir") |> render() =~ ~r/>\s*myelixir\s*</
+    refute has_element?(view, "#chip-#{sname}")
     assert_received {:read, ^sname, "stdout", 5}
     assert_received {:subscribed, ^sname, "stderr"}
 
@@ -77,7 +79,7 @@ defmodule DeployexWeb.Logs.IndexTest do
     assert html =~ "a new line"
     assert html =~ "and another"
 
-    html = view |> element("#chip-#{sname} button") |> render_click()
+    html = view |> element("#chip-app-myelixir button") |> render_click()
     refute html =~ "GET / [info] Sent 200"
     assert_received {:unsubscribed, ^sname, "stdout"}
   end
@@ -105,7 +107,7 @@ defmodule DeployexWeb.Logs.IndexTest do
 
     html = view |> element("#pick-every-app") |> render_click()
     assert html =~ "Remove every app"
-    assert has_element?(view, "#chip-#{other}")
+    assert has_element?(view, "#chip-app-myerlang")
     assert_received {:subscribed, ^other, "stdout"}
 
     html = view |> element("#pick-every-app") |> render_click()
@@ -326,6 +328,12 @@ defmodule DeployexWeb.Logs.IndexTest do
 
     view |> element("#range-1h") |> render_click()
     assert_received {:read, ^sname, "stdout", 60}
+
+    # Only the ranges the page offers: a value it does not offer reads nothing and keeps the range
+    render_hook(view, "range", %{"minutes" => "100000000"})
+    render_hook(view, "range", %{"minutes" => "soon"})
+    refute_received {:read, _sname, _type, 100_000_000}
+    assert render(view) =~ ~r/id="range-1h"[^>]*aria-pressed="true"/
   end
 
   @tag :capture_log

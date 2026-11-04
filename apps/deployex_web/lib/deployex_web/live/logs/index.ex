@@ -475,8 +475,12 @@ defmodule DeployexWeb.LogsLive do
      |> stream(:lines, [], reset: true)}
   end
 
+  # Only a range the page offers, since the value comes from the client
   def handle_event("range", %{"minutes" => minutes}, socket) do
-    {:noreply, socket |> assign(:range, String.to_integer(minutes)) |> reload()}
+    case Enum.find(@ranges, fn {_label, range} -> to_string(range) == minutes end) do
+      {_label, range} -> {:noreply, socket |> assign(:range, range) |> reload()}
+      nil -> {:noreply, socket}
+    end
   end
 
   @impl true
@@ -658,16 +662,16 @@ defmodule DeployexWeb.LogsLive do
     [%{app: nil, sources: own} | apps]
   end
 
-  # The selected sources, with one chip for an app of several instances when all of them are on
+  # The selected sources, with one chip for an app when all its instances are on, as the picker offers it
   defp chips(groups, selected) do
     Enum.flat_map(groups, fn group ->
       on = Enum.filter(group.sources, &MapSet.member?(selected, &1.sname))
 
-      if group.app && length(on) > 1 && length(on) == length(group.sources) do
+      if group.app && on != [] && length(on) == length(group.sources) do
         [
           %{
             id: "chip-app-#{group.app}",
-            label: "#{group.app} · #{length(on)} instances",
+            label: app_label(group.app, length(on)),
             color: group.color,
             icon: group.lang,
             event: "toggle-app",
@@ -688,6 +692,10 @@ defmodule DeployexWeb.LogsLive do
       end
     end)
   end
+
+  # An app chip names its instance count when it has more than one
+  defp app_label(app, 1), do: app
+  defp app_label(app, count), do: "#{app} · #{count} instances"
 
   defp pressed(sources, selected) do
     case Enum.count(sources, &MapSet.member?(selected, &1.sname)) do
