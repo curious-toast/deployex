@@ -237,17 +237,37 @@ defmodule DeployexWeb.VersionsLive do
      |> load()}
   end
 
+  # The broadcast carries the statuses, and the history is read again only when the versions change
   @impl true
-  def handle_info({:monitoring_app_updated, source_node, _statuses}, socket)
+  def handle_info({:monitoring_app_updated, source_node, statuses}, socket)
       when source_node == node(),
-      do: {:noreply, load(socket)}
+      do: {:noreply, load(socket, statuses, :changed)}
 
   def handle_info(_message, socket), do: {:noreply, socket}
 
-  defp load(%{assigns: %{name: name}} = socket) do
-    found = find_app(socket, name)
+  # A load after an action reads the statuses and the history again
+  defp load(socket) do
+    statuses =
+      case connected?(socket) && Status.monitoring() do
+        {:ok, statuses} -> statuses
+        _ -> []
+      end
+
+    load(socket, statuses, :always)
+  end
+
+  defp load(%{assigns: %{name: name}} = socket, statuses, read) do
+    found = find_app(statuses, name)
     app = found || %Status{name: name, config: %{}}
     children = app.children
+    versions = Map.get(app.config, :versions, [])
+    currents = Map.new(children, &{&1.sname, &1.version})
+
+    history =
+      if read == :changed and socket.assigns[:read_for] == {versions, currents},
+        do: socket.assigns.history,
+        else: history(socket, found)
+
     pinned = pinned(app.config)
 
     socket =
@@ -257,11 +277,12 @@ defmodule DeployexWeb.VersionsLive do
       |> assign(:timing, timing(app))
       |> assign(:snames, Enum.map(children, & &1.sname))
       |> assign(:count, max(app.replicas, length(children)))
-      |> assign(:currents, Map.new(children, &{&1.sname, &1.version}))
+      |> assign(:currents, currents)
       |> assign(:current, children |> Enum.map(& &1.version) |> Enum.find(& &1))
       |> assign(:pinned, pinned)
-      |> assign(:versions, Map.get(app.config, :versions, []))
-      |> assign(:history, history(socket, found))
+      |> assign(:versions, versions)
+      |> assign(:history, history)
+      |> assign(:read_for, {versions, currents})
       |> assign(:now, DateTime.utc_now())
 
     socket
@@ -270,13 +291,7 @@ defmodule DeployexWeb.VersionsLive do
   end
 
   # The app's status, or nil when this host does not run it, or before the first reading
-  defp find_app(socket, name) do
-    statuses =
-      case connected?(socket) && Status.monitoring() do
-        {:ok, statuses} -> statuses
-        _ -> []
-      end
-
+  defp find_app(statuses, name) do
     case Enum.find(statuses, &(&1.name == name)) do
       %{config: config} = app when is_map(config) -> app
       app when is_map(app) -> %{app | config: %{}}

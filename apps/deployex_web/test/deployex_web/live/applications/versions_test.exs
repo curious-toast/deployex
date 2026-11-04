@@ -132,10 +132,37 @@ defmodule DeployexWeb.Applications.VersionsTest do
     assert has_element?(view, ~s(a[aria-pressed="true"]), "All instances")
     refute has_element?(view, ~s(a[aria-pressed="true"]), "abc123")
 
-    # Another node's update changes nothing, this node's reloads the page
+    # Another node's update changes nothing, this node's updates the page from its statuses
+    {:ok, statuses} = Deployer.Status.monitoring()
     send(view.pid, {:monitoring_app_updated, :other@host, []})
-    send(view.pid, {:monitoring_app_updated, Node.self(), []})
+    send(view.pid, {:monitoring_app_updated, Node.self(), statuses})
     assert render(view) =~ "1.4.1"
+  end
+
+  @tag :capture_log
+  test "an update reads the history again only when the versions change", %{conn: conn} do
+    test_pid = self()
+    stub_status(config())
+
+    stub(Deployer.StatusMock, :history_version_list, fn @name, [] ->
+      send(test_pid, :history_read)
+      [version("1.4.2", :hot_upgrade, ~N[2026-10-28 12:14:00])]
+    end)
+
+    {:ok, view, _html} = live(conn, ~p"/applications/#{@name}/versions")
+    assert_received :history_read
+    {:ok, [deployex, app]} = Deployer.Status.monitoring()
+
+    # The same versions, every second: no read
+    for _tick <- 1..3, do: send(view.pid, {:monitoring_app_updated, Node.self(), [deployex, app]})
+    render(view)
+    refute_received :history_read
+
+    # A new version: one read
+    newer = %{app | config: %{app.config | versions: ["1.4.3" | app.config.versions]}}
+    send(view.pid, {:monitoring_app_updated, Node.self(), [deployex, newer]})
+    render(view)
+    assert_received :history_read
   end
 
   @tag :capture_log
