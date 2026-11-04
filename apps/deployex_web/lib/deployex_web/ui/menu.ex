@@ -25,6 +25,7 @@ defmodule DeployexWeb.UI.Menu do
       class="relative"
       phx-hook="Menu"
       phx-click-away={close(@id)}
+      data-close={close(@id)}
       data-escape={close(@id) |> JS.focus(to: "##{@id}-button")}
     >
       <button

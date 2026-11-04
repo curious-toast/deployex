@@ -95,6 +95,11 @@ defmodule DeployexWeb.UI.ComponentsTest do
       assert html =~ "phx-click-away"
       assert html =~ ~s(data-method="delete")
       assert html =~ ~r/<button type="button" class="[^"]*" phx-click="noop">\s*Act/
+
+      # The Menu hook runs data-close when an item is clicked, and it hides the panel
+      [_all, close] = Regex.run(~r/data-close="([^"]+)"/, html)
+      assert close |> String.replace("&quot;", ~s(")) =~ ~s("hide",{"to":"#account-panel"})
+      assert html =~ ~r/class="dx-menu-item"[^>]*phx-click="noop"/
     end
   end
 

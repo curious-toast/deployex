@@ -89,6 +89,10 @@ const hooks = {
       this.el.addEventListener("keydown", (e) => {
         if (e.key === "Escape") this.liveSocket.execJS(this.el, this.el.dataset.escape);
       });
+      // A picked item closes the panel. Its own click still runs, as the event goes on to the LiveView
+      this.el.addEventListener("click", (e) => {
+        if (e.target.closest(".dx-menu-item")) this.liveSocket.execJS(this.el, this.el.dataset.close);
+      });
     }
   },
 
