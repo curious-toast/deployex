@@ -71,14 +71,30 @@ defmodule DeployexWeb.ApplicationsLive.ViewTest do
 
   test "sums CPU and memory over the instances, with -- when nothing was read" do
     children = [
-      child(%{resources: %Resources{cpu: 3, memory: 2_147_483_648}}),
-      child(%{sname: "myapp-def", resources: %Resources{cpu: 4, memory: 1_073_741_824}})
+      child(%{resources: %Resources{cpu: 3.0, cores: 10, memory: 2_147_483_648}}),
+      child(%{
+        sname: "myapp-def",
+        resources: %Resources{cpu: 4.25, cores: 10, memory: 1_073_741_824}
+      })
     ]
 
-    assert [%{cpu: "7%", memory: "3.0 GB"}] = View.apps([app(children)], %{}, @now)
+    assert [%{cpu: "7%", cpu_tip: "7% of 10 cores", memory: "3.0 GB"}] =
+             View.apps([app(children)], %{}, @now)
 
-    assert [%{cpu: "--", memory: "--", instances: [%{cpu: "--"}]}] =
+    assert [%{cpu: "--", cpu_tip: nil, memory: "--", instances: [%{cpu: "--", cpu_tip: nil}]}] =
              View.apps([app([child(%{})])], %{}, @now)
+  end
+
+  test "an idle instance's CPU below 1% keeps one decimal, and names its scale" do
+    idle = child(%{resources: %Resources{cpu: 0.04, cores: 10, memory: 1_048_576}})
+
+    assert [%{cpu: "<0.1%", instances: [%{cpu: "<0.1%", cpu_tip: "<0.1% of 10 cores"}]}] =
+             View.apps([app([idle])], %{}, @now)
+
+    assert View.cpu_text(0.0) == "0%"
+    assert View.cpu_text(0.36) == "0.4%"
+    assert View.cpu_text(0.96) == "1%"
+    assert View.cpu_text(12.4) == "12%"
   end
 
   test "the status follows the running instances" do

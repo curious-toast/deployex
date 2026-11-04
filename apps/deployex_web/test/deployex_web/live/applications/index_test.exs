@@ -22,7 +22,8 @@ defmodule DeployexWeb.Applications.IndexTest do
     versions: []
   }
 
-  defp resources, do: %Resources{sname: "myphoenixapp-abc123", cpu: 12, memory: 849_346_560}
+  defp resources,
+    do: %Resources{sname: "myphoenixapp-abc123", cpu: 12.0, cores: 10, memory: 849_346_560}
 
   # The Watchdog's samples of an app's instance, with its processes at 81% by default
   defp usage(name, samples \\ %{}) do
@@ -70,6 +71,7 @@ defmodule DeployexWeb.Applications.IndexTest do
     assert html =~ "4.5.6 · OTP 27 · Elixir 1.20"
     assert html =~ "1/1 running"
     assert html =~ "12%"
+    assert html =~ "12% of 10 cores"
     assert html =~ "810 MB"
     assert html =~ "2h ago"
     assert html =~ "dx-dtag-full"

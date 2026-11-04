@@ -291,7 +291,12 @@ defmodule DeployexWeb.ApplicationsLive.Board do
               </span>
             </span>
           </div>
-          <div class="dx-num text-[0.875rem] font-semibold">{@app.cpu}</div>
+          <.cpu
+            id={"app-#{@app.name}-cpu"}
+            text={@app.cpu}
+            tip={@app.cpu_tip}
+            class="text-[0.875rem] font-semibold"
+          />
           <div class="dx-num text-[0.875rem] font-semibold">{@app.memory}</div>
           <.restarts
             id={"app-#{@app.name}-restarts"}
@@ -579,7 +584,12 @@ defmodule DeployexWeb.ApplicationsLive.Board do
           tone={@instance.status.tone}
           class="font-medium"
         />
-        <div class="dx-num text-[0.8125rem]">{@instance.cpu}</div>
+        <.cpu
+          id={"instance-#{@instance.sname}-cpu"}
+          text={@instance.cpu}
+          tip={@instance.cpu_tip}
+          class="text-[0.8125rem]"
+        />
         <div class="dx-num text-[0.8125rem]">{@instance.memory}</div>
         <.restarts
           id={"instance-#{@instance.sname}-restarts"}
@@ -766,6 +776,21 @@ defmodule DeployexWeb.ApplicationsLive.Board do
       <span popover="manual" class="dx-tip" aria-hidden="true">
         <span :for={line <- @restarts.lines} class="block">{line}</span>
       </span>
+    </div>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :text, :string, required: true
+  attr :tip, :string, default: nil, doc: "the share with its scale, like 0.4% of 10 cores"
+  attr :class, :string, default: nil
+
+  defp cpu(assigns) do
+    ~H"""
+    <div :if={!@tip} id={@id} class={["dx-num", @class]}>{@text}</div>
+    <div :if={@tip} id={@id} class={["dx-num", @class]} phx-hook="Tip">
+      {@text}<span class="sr-only">: {@tip}</span>
+      <span popover="manual" class="dx-tip" aria-hidden="true">{@tip}</span>
     </div>
     """
   end

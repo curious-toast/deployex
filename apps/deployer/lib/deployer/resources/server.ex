@@ -104,6 +104,7 @@ defmodule Deployer.Resources.Server do
       resources = %Resources{
         sname: sname,
         cpu: cpu_percent(instance, Map.get(previous, sname), cores),
+        cores: cores,
         memory: Map.get(memory, instance.os_pid),
         sampled_at: sampled_at
       }
@@ -161,7 +162,7 @@ defmodule Deployer.Resources.Server do
          cores
        )
        when at_ms > previous.at_ms and runtime_ms >= previous.runtime_ms do
-    round((runtime_ms - previous.runtime_ms) / ((at_ms - previous.at_ms) * cores) * 100)
+    Float.round((runtime_ms - previous.runtime_ms) / ((at_ms - previous.at_ms) * cores) * 100, 4)
   end
 
   defp cpu_percent(_instance, _previous, _cores), do: nil

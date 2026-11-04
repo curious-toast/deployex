@@ -97,8 +97,33 @@ defmodule Deployer.ResourcesTest do
     Process.sleep(20)
     :ok = sample(name)
 
+    assert %Resources{cpu: cpu, cores: cores} = Server.get(sname, name)
+    assert is_float(cpu) and cpu > 0
+    assert is_integer(cores) and cores > 0
+  end
+
+  test "keeps a CPU share far below 0.01% above zero", %{name: name, sname: sname, node: node} do
+    stub_running(sname)
+    stub_node(node, fn -> 1_001 end)
+    stub_ps({:ok, [stdout: ["4242 1024\n"]]})
+    start_server(name)
+
+    # The last sample was 100 seconds ago with 1 millisecond of CPU time less
+    :sys.replace_state(name, fn state ->
+      previous = %{
+        node: node,
+        os_pid: 4242,
+        runtime_ms: 1_000,
+        at_ms: System.monotonic_time(:millisecond) - 100_000
+      }
+
+      %{state | instances: %{sname => previous}}
+    end)
+
+    :ok = sample(name)
+
     assert %Resources{cpu: cpu} = Server.get(sname, name)
-    assert is_integer(cpu) and cpu > 0
+    assert cpu > 0
   end
 
   test "keeps the sample with no memory when ps fails", %{name: name, sname: sname, node: node} do

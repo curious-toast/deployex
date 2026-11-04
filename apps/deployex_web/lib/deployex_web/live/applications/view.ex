@@ -93,7 +93,8 @@ defmodule DeployexWeb.ApplicationsLive.View do
       total: total,
       pinned: pinned(status.config),
       problems: problems,
-      cpu: sum_text(instances, :cpu_value, &"#{&1}%"),
+      cpu: sum_text(instances, :cpu_value, &cpu_text/1),
+      cpu_tip: cpu_tip(sum(instances, :cpu_value), Enum.find_value(instances, & &1.cores)),
       memory: sum_text(instances, :memory_value, &bytes/1),
       restarts: restarts(status.children),
       deploy: deploy(status, ghosted, now),
@@ -116,8 +117,10 @@ defmodule DeployexWeb.ApplicationsLive.View do
       version: child.version,
       status: instance_status(child.status),
       cpu_value: resources && resources.cpu,
+      cores: resources && resources.cores,
       memory_value: resources && resources.memory,
-      cpu: if(resources && resources.cpu, do: "#{resources.cpu}%", else: "--"),
+      cpu: cpu_text(resources && resources.cpu),
+      cpu_tip: cpu_tip(resources && resources.cpu, resources && resources.cores),
       memory: if(resources && resources.memory, do: bytes(resources.memory), else: "--"),
       restarts: restarts([child]),
       ports: Enum.map(List.wrap(child.ports), &Map.take(&1, [:key, :base])),
@@ -479,11 +482,41 @@ defmodule DeployexWeb.ApplicationsLive.View do
   defp count(n, noun), do: "#{n} #{noun}s"
 
   defp sum_text(instances, key, format) do
-    case instances |> Enum.map(&Map.get(&1, key)) |> Enum.reject(&is_nil/1) do
-      [] -> "--"
-      values -> format.(Enum.sum(values))
+    case sum(instances, key) do
+      nil -> "--"
+      sum -> format.(sum)
     end
   end
+
+  defp sum(instances, key) do
+    case instances |> Enum.map(&Map.get(&1, key)) |> Enum.reject(&is_nil/1) do
+      [] -> nil
+      values -> Enum.sum(values)
+    end
+  end
+
+  @doc """
+  A CPU share as text. Below 1% it has one decimal, so an idle instance does not read as 0%.
+  """
+  @spec cpu_text(number() | nil) :: String.t()
+  def cpu_text(nil), do: "--"
+
+  def cpu_text(cpu) do
+    tenths = Float.round(cpu / 1, 1)
+
+    cond do
+      cpu == 0 -> "0%"
+      tenths == 0 -> "<0.1%"
+      tenths < 1 -> "#{tenths}%"
+      true -> "#{round(cpu)}%"
+    end
+  end
+
+  # The scale of the share, since top and Activity Monitor count 100% for each core
+  defp cpu_tip(cpu, cores) when is_number(cpu) and is_integer(cores),
+    do: "#{cpu_text(cpu)} of #{count(cores, "core")}"
+
+  defp cpu_tip(_cpu, _cores), do: nil
 
   @doc """
   A time in milliseconds in words, in the largest whole unit, like "5 seconds" or "10 minutes".

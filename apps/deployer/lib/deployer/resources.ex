@@ -11,17 +11,18 @@ defmodule Deployer.Resources do
 
   @type t :: %__MODULE__{
           sname: String.t(),
-          cpu: non_neg_integer() | nil,
+          cpu: float() | nil,
+          cores: pos_integer() | nil,
           memory: non_neg_integer() | nil,
           sampled_at: DateTime.t() | nil
         }
 
-  defstruct [:sname, :cpu, :memory, :sampled_at]
+  defstruct [:sname, :cpu, :cores, :memory, :sampled_at]
 
   @doc """
   Returns the last sample of an instance, or nil when it has none.
 
-  `cpu` is a percentage of all the host's cores, `memory` the resident memory in bytes.
+  `cpu` is a percentage of all the host's `cores`, `memory` the resident memory in bytes.
   """
   @spec get(sname :: String.t()) :: t() | nil
   def get(sname), do: Server.get(sname)
