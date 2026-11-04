@@ -125,6 +125,23 @@ defmodule Deployer.Status.ApplicationTest do
     assert length(StatusApp.ghosted_version_list(name_1)) == 2
   end
 
+  test "ghosted_version_list/1 lists the newest version first", %{
+    name_1: name_1,
+    sname_1: sname_1
+  } do
+    version_map = StatusApp.current_version_map(sname_1)
+
+    for {version, at} <- [
+          {"2.0.0", ~N[2026-10-30 10:00:00]},
+          {"1.0.0", ~N[2026-10-01 10:00:00]},
+          {"3.0.0", ~N[2026-11-01 10:00:00]}
+        ],
+        do: StatusApp.add_ghosted_version(%{version_map | version: version, inserted_at: at})
+
+    assert ["3.0.0", "2.0.0", "1.0.0"] =
+             Enum.map(StatusApp.ghosted_version_list(name_1), & &1.version)
+  end
+
   test "remove_ghosted_version/2 and clear_ghosted_versions/1", %{
     name_1: name_1,
     sname_1: sname_1

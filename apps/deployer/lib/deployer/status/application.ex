@@ -210,8 +210,13 @@ defmodule Deployer.Status.Application do
     version |> Catalog.add_ghosted_version() |> broadcast_ghosted_versions(name)
   end
 
+  # Newest first. The catalog lists the files in directory order, so its head can be any version
   @impl true
-  def ghosted_version_list(name), do: Catalog.ghosted_versions(name)
+  def ghosted_version_list(name) do
+    name
+    |> Catalog.ghosted_versions()
+    |> Enum.sort_by(&(&1.inserted_at || ~N[0000-01-01 00:00:00]), {:desc, NaiveDateTime})
+  end
 
   @impl true
   def remove_ghosted_version(name, version) do
