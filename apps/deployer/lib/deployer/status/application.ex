@@ -22,6 +22,7 @@ defmodule Deployer.Status.Application do
   @ghosted_versions_topic "deployex::ghosted_versions"
 
   @manual_version_max_list 10
+  @mtls_certificate_refresh_seconds 3_600
 
   ### ==========================================================================
   ### Callback GenServer functions
@@ -419,14 +420,17 @@ defmodule Deployer.Status.Application do
 
   defp deployed_at(_version_map), do: nil
 
+  # Read again every hour, so the days to its expiry stay current while the process runs
   defp mtls_certificate do
-    case Process.get(:mtls_certificate, :not_fetched) do
-      :not_fetched ->
-        value = Common.mtls_certificate()
-        Process.put(:mtls_certificate, value)
+    now = System.monotonic_time(:second)
+
+    case Process.get(:mtls_certificate) do
+      {value, read_at} when now - read_at < @mtls_certificate_refresh_seconds ->
         value
 
-      value ->
+      _stale ->
+        value = Common.mtls_certificate()
+        Process.put(:mtls_certificate, {value, now})
         value
     end
   end

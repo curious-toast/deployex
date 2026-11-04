@@ -261,6 +261,35 @@ defmodule Deployer.Status.ApplicationTest do
            )
   end
 
+  test "the DeployEx certificate is read again after an hour, so its expiry stays current", %{
+    sname_1: sname_1
+  } do
+    Deployer.MonitorMock
+    |> stub(:state, fn sname -> %Deployer.Monitor{sname: sname, status: :idle} end)
+    |> stub(:list, fn -> [sname_1] end)
+
+    stub(Foundation.RpcMock, :call, fn _node, _module, _functions, _args, _timeout -> nil end)
+
+    stale = %Foundation.Certificates.PublicKey{expires_in_days: 30}
+
+    deployex_tls = fn ->
+      {:noreply, %{monitoring: monitoring}} =
+        StatusApp.handle_info(:update_apps, %{monitoring: []})
+
+      Enum.find(monitoring, &(&1.name == "deployex")).tls
+    end
+
+    # Read a minute ago, the cached certificate stays
+    Process.put(:mtls_certificate, {stale, System.monotonic_time(:second) - 60})
+    assert deployex_tls.() == stale
+
+    # Read over an hour ago, the file is read again, and a test node has none
+    Process.put(:mtls_certificate, {stale, System.monotonic_time(:second) - 3_601})
+    assert deployex_tls.() == nil
+  after
+    Process.delete(:mtls_certificate)
+  end
+
   test "update monitoring apps with running state and otp not connected", %{
     sname_1: sname_1,
     sname_2: sname_2,
