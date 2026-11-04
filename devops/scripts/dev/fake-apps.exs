@@ -1,12 +1,11 @@
 # Shows fake apps next to the real ones on a running `make start`, to look at the dashboard with many apps.
 # `make dev-fake-apps` evaluates it on the DeployEx node with `count` bound, and `make dev-fake-apps-off`
-# removes them. The fakes pass through `Deployer.Status` only: they run nothing, and their Logs, shell and
-# Restart buttons act on instances that do not exist.
+# removes them. The fakes pass through `Deployer.Status`, and their limits through the watchdog's table: they
+# run nothing, and their Logs, shell and Restart buttons act on instances that do not exist.
 
 defmodule DevFakeApps.Fakes do
   @moduledoc false
   alias Deployer.Resources
-  alias Deployer.Resources.Limit
   alias Deployer.Status
 
   @monitoring [
@@ -25,7 +24,7 @@ defmodule DevFakeApps.Fakes do
     {"payments_gateway", "elixir", "5.0.1", 3, starting: 1, age: 3 * 60},
     {"inventory", "gleam", "1.1.0", 1, age: 12 * 3600},
     {"reporting", "elixir", "3.2.0", 1, ghosted: {"3.3.0", :down}, age: 2 * 86_400},
-    {"media_encoder", "erlang", "7.0.4", 2, atom_trend: true, age: 4 * 3600},
+    {"media_encoder", "erlang", "7.0.4", 2, atom: 78, age: 4 * 3600},
     {"chat", "elixir", "1.30.2", 3, tls_days: 5, age: 6 * 3600},
     {"pricing", "elixir", "2.0.0", 1, pre_commands: :failed, age: 60},
     {"recommendations", "elixir", "1.7.4", 2, ghosted: {"1.8.0", :up}, age: 20 * 3600},
@@ -145,6 +144,7 @@ defmodule DevFakeApps.Fakes do
       deploy_rollback_timeout_ms: 600_000,
       deploy_schedule_interval_ms: 5_000,
       monitoring: @monitoring,
+      certificates: certificates(opts[:tls_days]),
       children:
         for(n <- 1..replicas, do: child(name, runtime, version, n, index, opts, deployed_at, now)),
       config: %{
@@ -192,52 +192,59 @@ defmodule DevFakeApps.Fakes do
       urls: ["https://#{String.replace(name, "_", "-")}.example.com"],
       otp_version: if(rem(index, 3) == 0, do: "28", else: "29"),
       elixir_version: "1.19.5",
-      certificates: certificates(opts[:tls_days]),
-      resources: if(status in [:running, :starting], do: resources(sname, index, n, opts))
+      otp: if(status == :running, do: :connected, else: :not_connected),
+      resources: if(status in [:running, :starting], do: resources(sname, index, n))
     }
   end
 
-  defp resources(sname, index, n, opts) do
+  defp resources(sname, index, n) do
     seed = :erlang.phash2({index, n})
 
     %Resources{
       sname: sname,
-      cpu: rem(seed, 9) + 1,
-      memory: (120 + rem(seed, 380)) * 1_048_576,
-      process: limit(n == 1 && opts[:process], 900 + rem(seed, 600), 1_048_576),
-      port: limit(n == 1 && opts[:port], 12 + rem(seed, 30), 65_536),
-      atom:
-        if(opts[:atom_trend] && n == 1,
-          do: %Limit{
-            count: 190_000,
-            limit: 1_048_576,
-            percent: 18,
-            change_percent: 14,
-            change_minutes: 60
-          },
-          else: limit(nil, 48_000 + rem(seed, 9_000), 1_048_576)
-        )
+      cpu: rem(seed, 90) / 10,
+      cores: 10,
+      memory: (120 + rem(seed, 380)) * 1_048_576
     }
   end
 
-  # A count near the limit, at the given percent, or a quiet one
-  defp limit(percent, _count, max) when is_integer(percent),
-    do: %Limit{
-      count: div(max * percent, 100),
-      limit: max,
-      percent: percent,
-      change_percent: 1,
-      change_minutes: 60
-    }
+  @doc """
+  The watchdog's rows for the limits of the running fakes: a count near the limit at the percent the app
+  names, or a quiet one.
+  """
+  def watchdog_rows do
+    for %{children: children} = app <- apps(),
+        {%{status: :running} = child, n} <- Enum.with_index(children, 1),
+        {type, max, quiet} <-
+          [process: 1_048_576, port: 65_536, atom: 1_048_576] |> with_quiet(child, n),
+        row <- [
+          {{child.node, :data, type},
+           %Sentinel.Watchdog.Data{current: count(app, type, n, max, quiet), limit: max}},
+          {{child.node, :config, type}, struct(Sentinel.Watchdog, @monitoring[type])}
+        ],
+        do: row
+  end
 
-  defp limit(_percent, count, max),
-    do: %Limit{
-      count: count,
-      limit: max,
-      percent: trunc(count / max * 100),
-      change_percent: 0,
-      change_minutes: 60
-    }
+  defp with_quiet(types, child, n) do
+    seed = :erlang.phash2({child.sname, n})
+    for {type, max} <- types, do: {type, max, rem(seed, 30) + div(max, 100)}
+  end
+
+  defp count(app, type, 1, max, quiet) do
+    opts =
+      Enum.find_value(@apps, [], fn {name, _runtime, _version, _replicas, opts} ->
+        name == base_name(app.name) && opts
+      end)
+
+    case opts[type] do
+      percent when is_integer(percent) -> div(max * percent, 100)
+      _other -> quiet
+    end
+  end
+
+  defp count(_app, _type, _n, _max, quiet), do: quiet
+
+  defp base_name(name), do: String.replace(name, ~r/_\d+$/, "")
 
   defp certificates(nil), do: []
 
@@ -358,5 +365,15 @@ DevFakeApps.Fakes.put_count(count)
 if pid = Process.whereis(DevFakeApps.Relay), do: GenServer.stop(pid)
 {:ok, _pid} = DevFakeApps.Relay.start()
 Application.put_env(:deployer, Deployer.Status, adapter: DevFakeApps.Status)
+
+# The watchdog owns its table, so the rows go in from its own process. It checks only the nodes it monitors,
+# so the fakes are never restarted
+rows = DevFakeApps.Fakes.watchdog_rows()
+
+:sys.replace_state(Sentinel.Watchdog, fn state ->
+  :ets.insert(:deployex_watchdog_data, rows) && state
+end)
+
+:persistent_term.put({DevFakeApps.Fakes, :watchdog_keys}, Enum.map(rows, &elem(&1, 0)))
 
 "DeployEx shows #{count} fake apps. Reload the dashboard. make dev-fake-apps-off removes them."

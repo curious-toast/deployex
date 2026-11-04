@@ -5,6 +5,15 @@ if pid = Process.whereis(DevFakeApps.Relay), do: GenServer.stop(pid)
 
 :persistent_term.erase({DevFakeApps.Fakes, :cleared})
 
+keys = :persistent_term.get({DevFakeApps.Fakes, :watchdog_keys}, [])
+
+:sys.replace_state(Sentinel.Watchdog, fn state ->
+  Enum.each(keys, &:ets.delete(:deployex_watchdog_data, &1))
+  state
+end)
+
+:persistent_term.erase({DevFakeApps.Fakes, :watchdog_keys})
+
 for module <- [DevFakeApps.Relay, DevFakeApps.Status, DevFakeApps.Fakes] do
   :code.purge(module)
   :code.delete(module)
