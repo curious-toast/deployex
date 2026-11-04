@@ -18,13 +18,33 @@
         const html = document.documentElement;
         const systemDark = window.matchMedia("(prefers-color-scheme: dark)");
 
+        // Storage can be blocked, like with site data off. The page then keeps the choices in memory, so the
+        // switch and the sidebar still work, only not across a reload
+        const saved = {};
+        const load = (key) => {
+          try {
+            saved[key] = localStorage.getItem(key);
+          } catch (_e) {
+            saved[key] = null;
+          }
+        };
+        const save = (key, value) => {
+          saved[key] = value;
+          try {
+            if (value === null) localStorage.removeItem(key);
+            else localStorage.setItem(key, value);
+          } catch (_e) {}
+        };
+        load("phx:theme");
+        load("dx:sidebar");
+
         // data-theme holds the theme: the one the user picked, or the system's until they pick one
         const applyTheme = () => {
-          html.dataset.theme = localStorage.getItem("phx:theme") || (systemDark.matches ? "dark" : "light");
+          html.dataset.theme = saved["phx:theme"] || (systemDark.matches ? "dark" : "light");
         };
 
         const applySidebar = () => {
-          if (localStorage.getItem("dx:sidebar") === "collapsed") {
+          if (saved["dx:sidebar"] === "collapsed") {
             html.dataset.sidebar = "collapsed";
           } else {
             delete html.dataset.sidebar;
@@ -34,32 +54,27 @@
         // The ShellState hook in app.js mirrors these into the aria state of the shell controls
         const changed = () => window.dispatchEvent(new Event("dx:shell-state"));
 
-        const saveTheme = (theme) => {
-          localStorage.setItem("phx:theme", theme);
-          applyTheme();
-          changed();
-        };
-
         applyTheme();
         applySidebar();
 
         window.addEventListener("dx:toggle-theme", () => {
-          saveTheme(html.dataset.theme === "dark" ? "light" : "dark");
+          save("phx:theme", html.dataset.theme === "dark" ? "light" : "dark");
+          applyTheme();
+          changed();
         });
 
         window.addEventListener("dx:toggle-sidebar", () => {
-          if (html.dataset.sidebar === "collapsed") {
-            localStorage.removeItem("dx:sidebar");
-          } else {
-            localStorage.setItem("dx:sidebar", "collapsed");
-          }
+          save("dx:sidebar", html.dataset.sidebar === "collapsed" ? null : "collapsed");
           applySidebar();
           changed();
         });
 
+        // Another tab changed a choice
         window.addEventListener("storage", (e) => {
-          if (e.key === "phx:theme") applyTheme();
-          if (e.key === "dx:sidebar") applySidebar();
+          if (e.key !== "phx:theme" && e.key !== "dx:sidebar") return;
+          saved[e.key] = e.newValue;
+          applyTheme();
+          applySidebar();
           changed();
         });
 
