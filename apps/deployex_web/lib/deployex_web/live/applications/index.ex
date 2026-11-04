@@ -165,6 +165,11 @@ defmodule DeployexWeb.ApplicationsLive do
   def handle_info({:clear_shown, name}, socket),
     do: {:noreply, update(socket, :cleared, &Map.delete(&1, name))}
 
+  # The changes were applied or dropped elsewhere, like another tab or the agent API, so the modal closes
+  def handle_info({:watcher_config_new, source_node, nil}, %{assigns: %{node: node}} = socket)
+      when source_node == node,
+      do: {:noreply, assign(socket, :yaml_config, default_yaml_config())}
+
   def handle_info(
         {:watcher_config_new, source_node, pending_changes},
         %{assigns: %{node: node, yaml_config: yaml_config}} = socket

@@ -102,6 +102,26 @@ defmodule DeployexWeb.Applications.WatcherTest do
   end
 
   @tag :capture_log
+  test "GET /applications closes the review when the changes are applied elsewhere", %{conn: conn} do
+    Deployer.StatusMock
+    |> expect(:monitoring, fn -> {:ok, FixtureStatus.list()} end)
+    |> expect(:subscribe, fn -> :ok end)
+    |> stub(:history_version_list, fn _name, _options -> FixtureStatus.versions() end)
+
+    {:ok, liveview, _html} = live(conn, ~p"/applications")
+
+    send(liveview.pid, {:watcher_config_new, Node.self(), FixtureWatcher.build_pending_changes()})
+    liveview |> element("#host-config-review") |> render_click()
+    assert has_element?(liveview, "#yaml-config-changes-apply")
+
+    # Another tab or the agent API applies them while this review is open
+    send(liveview.pid, {:watcher_config_new, Node.self(), nil})
+
+    refute has_element?(liveview, "#yaml-config-changes-apply")
+    refute has_element?(liveview, "#host-config-review")
+  end
+
+  @tag :capture_log
   test "GET /applications Review pending notification changes renders adapter names and events",
        %{conn: conn} do
     Deployer.StatusMock
