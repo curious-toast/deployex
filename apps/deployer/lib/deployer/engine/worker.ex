@@ -428,46 +428,7 @@ defmodule Deployer.Engine.Worker do
 
     state =
       if sname == current_deployment.sname do
-        # NOTE: The rollback timer may not be armed, e.g. when the monitor
-        #       reports running right after an engine worker restart
-        if current_deployment.timer_ref, do: Process.cancel_timer(current_deployment.timer_ref)
-
-        # deploying? is set where a version is put into service, by a full deployment and by
-        # the start up path, so it is what says this report completes one. Everything else
-        # that reports running, a crash restart, a restart asked for from the UI, or a hot
-        # upgrade that has already reported itself with the versions it moved between,
-        # finds it false and is not announced as a deployment
-        if current_deployment.deploying?, do: notify_deployment_complete(sname)
-
-        # Whatever put the application there, it is running and the system has qualified it
-        # as ready, which is the report itself. A crash restart and a restart asked for
-        # from the UI reach here too, and this is the event that says so
-        notify_application_ready(sname)
-
-        # An app that comes back while its hot upgrade waits for it keeps the instance current,
-        # so the upgrade goes on there
-        new_instance =
-          cond do
-            match?(%{sname: ^sname}, Map.get(state, :pending_pre_commands)) -> state.current
-            state.current == state.replicas -> 1
-            true -> state.current + 1
-          end
-
-        state = terminate_previous_deployment(state)
-
-        Logger.info(" # Moving to the next instance: #{new_instance}")
-
-        # This report closed the window: the timer was cancelled above and the flag goes
-        # with it, so a later report for the same deployment, e.g. after a crash restart,
-        # is not taken for another one
-        deployments =
-          Map.put(state.deployments, state.current, %{
-            current_deployment
-            | timer_ref: nil,
-              deploying?: false
-          })
-
-        %{state | current: new_instance, deployments: deployments}
+        application_running(state, sname)
       else
         Logger.warning(
           "Received sname: #{sname} that doesn't match the expected one: #{state.current} sname: #{current_deployment.sname}"
@@ -815,6 +776,52 @@ defmodule Deployer.Engine.Worker do
   defp waiting?(%Engine.Deployment{state: :stopped}), do: true
   defp waiting?(%Engine.Deployment{state: :init, sname: nil}), do: true
   defp waiting?(_deployment), do: false
+
+  # The current instance runs: the window closes and the rollout moves to the next instance
+  defp application_running(state, sname) do
+    current_deployment = state.deployments[state.current]
+
+    # NOTE: The rollback timer may not be armed, e.g. when the monitor
+    #       reports running right after an engine worker restart
+    if current_deployment.timer_ref, do: Process.cancel_timer(current_deployment.timer_ref)
+
+    # deploying? is set where a version is put into service, by a full deployment and by
+    # the start up path, so it is what says this report completes one. Everything else
+    # that reports running, a crash restart, a restart asked for from the UI, or a hot
+    # upgrade that has already reported itself with the versions it moved between,
+    # finds it false and is not announced as a deployment
+    if current_deployment.deploying?, do: notify_deployment_complete(sname)
+
+    # Whatever put the application there, it is running and the system has qualified it
+    # as ready, which is the report itself. A crash restart and a restart asked for
+    # from the UI reach here too, and this is the event that says so
+    notify_application_ready(sname)
+
+    # An app that comes back while its hot upgrade waits for it keeps the instance current,
+    # so the upgrade goes on there
+    new_instance =
+      cond do
+        match?(%{sname: ^sname}, Map.get(state, :pending_pre_commands)) -> state.current
+        state.current == state.replicas -> 1
+        true -> state.current + 1
+      end
+
+    state = terminate_previous_deployment(state)
+
+    Logger.info(" # Moving to the next instance: #{new_instance}")
+
+    # This report closed the window: the timer was cancelled above and the flag goes
+    # with it, so a later report for the same deployment, e.g. after a crash restart,
+    # is not taken for another one
+    deployments =
+      Map.put(state.deployments, state.current, %{
+        current_deployment
+        | timer_ref: nil,
+          deploying?: false
+      })
+
+    %{state | current: new_instance, deployments: deployments}
+  end
 
   # The new version runs, so the window is over and the deployment kept to return to stops
   defp terminate_previous_deployment(%{deployment_to_terminate: nil} = state), do: state
@@ -1276,7 +1283,6 @@ defmodule Deployer.Engine.Worker do
             # Cleanup Any folder left for the new sname
             Catalog.cleanup(new_sname)
 
-            notify_application_running(sname)
             :ok
 
           error ->
@@ -1373,7 +1379,13 @@ defmodule Deployer.Engine.Worker do
       # into a full deployment of this version
       current_deployment = %{state.deployments[state.current] | deploying?: false}
 
-      %{state | deployments: Map.put(state.deployments, state.current, current_deployment)}
+      state = %{
+        state
+        | deployments: Map.put(state.deployments, state.current, current_deployment)
+      }
+
+      # Reported here, not cast, so no schedule tick moves the rollout before the report
+      application_running(state, sname)
     end
   end
 

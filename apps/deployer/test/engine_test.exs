@@ -5488,6 +5488,35 @@ defmodule Deployer.EngineTest do
                end)
       end
     end
+
+    @tag :capture_log
+    test "With three replicas, a hot upgrade longer than a schedule tick reports each instance ready" do
+      name = "myelixir"
+      set_version = switchable_version_map("1.0.0")
+
+      with_mock System, [:passthrough],
+        cmd: fn "tar", ["-x", "-f", _source_path, "-C", _dest_path] -> {"", 0} end do
+        {worker_pid, _versions} = start_replicas_on_one_version(name)
+
+        Deployer.HotUpgradeMock
+        |> stub(:check, fn check -> {:ok, %{check | deploy: :hot_upgrade}} end)
+        |> stub(:execute, fn _execute ->
+          # The relup takes longer than one schedule tick
+          Process.sleep(120)
+          :ok
+        end)
+
+        subscribe_to_application_ready()
+        %{deployments: deployments} = :sys.get_state(worker_pid)
+        set_version.("2.0.0")
+
+        for instance <- 1..3, sname = deployments[instance].sname do
+          assert_receive {"application_ready", %{sname: ^sname, version: "2.0.0"}}, 1_000
+        end
+
+        assert %{current: 1} = :sys.get_state(worker_pid)
+      end
+    end
   end
 
   # Monitor.Application answers a pre-commands request with a message to the caller, the
