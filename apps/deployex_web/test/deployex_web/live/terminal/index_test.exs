@@ -179,13 +179,21 @@ defmodule DeployexWeb.Terminal.IndexTest do
   end
 
   @tag :capture_log
-  test "a shell that cannot start shows an error", %{conn: conn} do
+  test "a shell that cannot start shows an error until one opens", %{conn: conn, user: user} do
     stub(Deployer.MonitorMock, :list, fn -> ["myelixir-nobinary"] end)
 
     {:ok, view, _html} = live(conn, ~p"/terminal")
 
     html = view |> element("#new-myelixir-nobinary") |> render_click()
-    assert html =~ "Could not open a shell on myelixir-nobinary"
+
+    assert html =~
+             "Could not open a shell on myelixir-nobinary: its release binary is not on this host."
+
+    # A session that opens clears the error
+    view |> element("#new-host") |> render_click()
+    assert_patch(view, ~p"/terminal?target=host")
+    refute render(view) =~ "Could not open a shell"
+    close_all(user.username)
   end
 
   @tag :capture_log

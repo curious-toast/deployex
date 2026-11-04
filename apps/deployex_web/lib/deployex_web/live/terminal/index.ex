@@ -328,11 +328,13 @@ defmodule DeployexWeb.TerminalLive do
       case Shell.open(assigns.user, target) do
         {:ok, _session} ->
           {:noreply,
-           socket |> load_sessions() |> push_patch(to: pane_path(assigns.active, target))}
+           socket
+           |> clear_flash(:error)
+           |> load_sessions()
+           |> push_patch(to: pane_path(assigns.active, target))}
 
         {:error, reason} ->
-          {:noreply,
-           put_flash(socket, :error, "Could not open a shell on #{target}: #{inspect(reason)}")}
+          {:noreply, put_flash(socket, :error, Shell.open_error(target, reason))}
       end
     end
   end
@@ -363,16 +365,17 @@ defmodule DeployexWeb.TerminalLive do
 
   def handle_event("new", %{"target" => target}, %{assigns: %{user: user}} = socket) do
     case Shell.open(user, target) do
+      # A session that opens clears the error of one that could not
       {:ok, _session} ->
         {:noreply,
          socket
+         |> clear_flash(:error)
          |> assign(:new_filter, "")
          |> load_sessions()
          |> push_patch(to: ~p"/terminal?target=#{target}")}
 
       {:error, reason} ->
-        {:noreply,
-         put_flash(socket, :error, "Could not open a shell on #{target}: #{inspect(reason)}")}
+        {:noreply, put_flash(socket, :error, Shell.open_error(target, reason))}
     end
   end
 

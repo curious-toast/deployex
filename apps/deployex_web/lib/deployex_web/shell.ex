@@ -104,6 +104,15 @@ defmodule DeployexWeb.Shell do
   @spec close(user :: String.t(), target :: String.t()) :: :ok
   def close(user, target), do: with_server(user, target, &Server.close/1)
 
+  @doc """
+  The text of an error from `open/2`, for the page or the dock that asked.
+  """
+  @spec open_error(target :: String.t(), reason :: term()) :: String.t()
+  def open_error(target, :binary_not_found),
+    do: "Could not open a shell on #{target}: its release binary is not on this host."
+
+  def open_error(target, reason), do: "Could not open a shell on #{target}: #{inspect(reason)}"
+
   @doc false
   @spec topic(id :: String.t()) :: String.t()
   def topic(id), do: "deployex::shell::#{id}"

@@ -284,7 +284,17 @@ defmodule DeployexWeb.DockTest do
       })
 
     refute html =~ "dx-dock-bar"
-    assert html =~ "Could not open a shell on myelixir-nobinary"
+
+    assert html =~
+             "Could not open a shell on myelixir-nobinary: its release binary is not on this host."
+
+    # The next open that works clears the error, as the dock stays across pages
+    stub(Sentinel.LogsMock, :list_data_by_sname_log_type, fn _sname, _type, _options -> [] end)
+
+    html =
+      render_hook(dock, "open", %{"kind" => "logs", "target" => "deployex", "app" => "deployex"})
+
+    refute html =~ "Could not open a shell"
   end
 
   @tag :capture_log

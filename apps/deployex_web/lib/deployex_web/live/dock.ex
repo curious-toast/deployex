@@ -539,7 +539,9 @@ defmodule DeployexWeb.DockLive do
   end
 
   # Opens a logs or shell tab, or finds it open, and returns its id, or nil when the shell does not start
+  # The dock stays across pages, so its error stays until the next open, which clears it first
   defp open_tab(socket, kind, target, app) do
+    socket = clear_flash(socket, :error)
     id = "#{kind}:#{target}"
     open = Enum.find(socket.assigns.tabs, &(&1.id == id))
 
@@ -608,7 +610,7 @@ defmodule DeployexWeb.DockLive do
         {update(socket, :tabs, &(&1 ++ [tab])), id}
 
       {:error, reason} ->
-        {put_flash(socket, :error, shell_error(target, reason)), nil}
+        {put_flash(socket, :error, Shell.open_error(target, reason)), nil}
     end
   end
 
@@ -627,12 +629,12 @@ defmodule DeployexWeb.DockLive do
         {socket, id}
 
       {:error, reason} ->
-        socket = socket |> close_tab(id, false) |> put_flash(:error, shell_error(target, reason))
+        socket =
+          socket |> close_tab(id, false) |> put_flash(:error, Shell.open_error(target, reason))
+
         {socket, nil}
     end
   end
-
-  defp shell_error(target, reason), do: "Could not open a shell on #{target}: #{inspect(reason)}"
 
   defp app_of(target), do: Instances.app(target) || target
 
