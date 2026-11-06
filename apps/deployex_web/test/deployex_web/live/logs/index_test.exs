@@ -277,7 +277,7 @@ defmodule DeployexWeb.Logs.IndexTest do
 
     send(view.pid, {:recent_notification, recent})
     send(view.pid, :flush_lines)
-    assert render(view) =~ "deployment_started events-test-def 1.2.3"
+    assert render(view) =~ "events-test-def deployment started · version 1.2.3"
 
     # Paused, the event waits for Resume
     view |> element("#logs-pause") |> render_click()

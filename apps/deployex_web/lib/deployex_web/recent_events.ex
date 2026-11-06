@@ -50,12 +50,16 @@ defmodule DeployexWeb.RecentEvents do
   def handle_recent(_message, socket), do: {:cont, socket}
 
   @doc """
-  Returns the bell item of an event, in a list, or an empty list for an event the bell does not show.
+  Returns the bell item of an event, in a list, or an empty list for an event the bell does not show, like a
+  routine one.
   """
   @spec item(Recent.t()) :: [map()]
   def item(%Recent{event: event, payload: payload} = recent) do
-    case describe(event, payload) do
+    case bell?(event, payload) && describe(event, payload) do
       nil ->
+        []
+
+      false ->
         []
 
       {tone, title, detail} ->
@@ -124,10 +128,57 @@ defmodule DeployexWeb.RecentEvents do
   defp describe("certificate_renewed", p),
     do: {:info, "TLS certificate renewed", to_string(p[:app_name])}
 
+  defp describe("watchdog_threshold_warning", p),
+    do:
+      {:info, "#{short(p[:node])} #{p[:type]} back to #{p[:current_percentage]}% of the limit",
+       "under the warning at #{p[:warning_threshold_percent]}%"}
+
+  defp describe("deployment_complete", %{status: :error, from_version: _} = p),
+    do: {:error, "#{p[:sname]} hot upgrade failed", to_string(p[:message])}
+
   defp describe("deployment_complete", %{status: :error} = p),
     do: {:error, "#{p[:sname]} deployment failed", to_string(p[:message])}
 
+  defp describe("deployment_complete", %{from_version: from, to_version: to} = p),
+    do: {:info, "#{p[:sname]} hot upgraded", "#{from} -> #{to}"}
+
+  defp describe("deployment_complete", %{message: "shutdown"}),
+    do: {:info, "DeployEx stopped", ""}
+
+  defp describe("deployment_complete", p),
+    do: {:info, "#{p[:sname]} deployed", version(p[:version])}
+
+  defp describe("deployment_started", %{sname: "deployex"} = p),
+    do: {:info, "DeployEx started", version(p[:version])}
+
+  defp describe("deployment_started", p),
+    do: {:info, "#{p[:sname]} deployment started", version(p[:version])}
+
+  defp describe("application_ready", p), do: {:info, "#{p[:sname]} ready", version(p[:version])}
+
+  defp describe("deployment_shutdown", %{sname: "deployex"}), do: {:info, "DeployEx stopping", ""}
+  defp describe("deployment_shutdown", p), do: {:info, "#{p[:sname]} stopping", ""}
+
+  defp describe("certificate_valid", p),
+    do: {:info, "TLS certificate valid", "#{p[:app_name]}: #{fields(p[:domains])}"}
+
   defp describe(_event, _payload), do: nil
+
+  # The routine steps of a deploy and a certificate check stay out of the bell, the Logs page has them
+  defp bell?(event, _payload)
+       when event in [
+              "deployment_started",
+              "application_ready",
+              "deployment_shutdown",
+              "certificate_valid"
+            ],
+       do: false
+
+  defp bell?("deployment_complete", %{message: "shutdown"}), do: false
+  defp bell?(_event, _payload), do: true
+
+  defp version(nil), do: ""
+  defp version(version), do: "version #{version}"
 
   defp reason(nil), do: "this host does not deploy it again"
   defp reason(reason), do: to_string(reason)

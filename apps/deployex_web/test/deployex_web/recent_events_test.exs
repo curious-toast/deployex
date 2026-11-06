@@ -114,10 +114,94 @@ defmodule DeployexWeb.RecentEventsTest do
                )
     end
 
-    test "skips the events the bell does not show" do
+    test "shows successful deploys, hot upgrades and a warning back under its threshold" do
+      assert [%{tone: :info, title: "myapp-abc hot upgraded", detail: "0.4.0 -> 0.4.1"}] =
+               RecentEvents.item(
+                 recent("deployment_complete", %{
+                   sname: "myapp-abc",
+                   status: :ok,
+                   message: "Hot upgrade applied successfully, 0.4.0 -> 0.4.1",
+                   from_version: "0.4.0",
+                   to_version: "0.4.1"
+                 })
+               )
+
+      assert [%{tone: :error, title: "myapp-abc hot upgrade failed", detail: "Hot upgrade " <> _}] =
+               RecentEvents.item(
+                 recent("deployment_complete", %{
+                   sname: "myapp-abc",
+                   status: :error,
+                   message: "Hot upgrade 0.4.0 -> 0.4.1 failed: :timeout",
+                   from_version: "0.4.0",
+                   to_version: "0.4.1"
+                 })
+               )
+
+      assert [%{tone: :info, title: "myapp-abc deployed", detail: "version 0.4.1"}] =
+               RecentEvents.item(
+                 recent("deployment_complete", %{
+                   sname: "myapp-abc",
+                   status: :ok,
+                   version: "0.4.1"
+                 })
+               )
+
+      assert [%{tone: :info, title: "myapp-abc process back to 40% of the limit"}] =
+               RecentEvents.item(
+                 recent("watchdog_threshold_warning", %{
+                   node: :"myapp-abc@host",
+                   type: :process,
+                   current_percentage: 40,
+                   warning_threshold_percent: 75,
+                   action: :normalized
+                 })
+               )
+    end
+
+    test "skips the routine events, which only the Logs page lists" do
       assert [] = RecentEvents.item(recent("application_ready", %{sname: "myapp-abc"}))
-      assert [] = RecentEvents.item(recent("deployment_complete", %{status: :ok}))
-      assert [] = RecentEvents.item(recent("watchdog_threshold_warning", %{action: :normalized}))
+      assert [] = RecentEvents.item(recent("deployment_started", %{sname: "myapp-abc"}))
+      assert [] = RecentEvents.item(recent("deployment_shutdown", %{sname: "myapp-abc"}))
+      assert [] = RecentEvents.item(recent("certificate_valid", %{app_name: "myapp"}))
+
+      assert [] =
+               RecentEvents.item(
+                 recent("deployment_complete", %{
+                   sname: "deployex",
+                   status: :ok,
+                   message: "shutdown"
+                 })
+               )
+    end
+  end
+
+  describe "line/1" do
+    test "gives every event a readable line for the Logs page" do
+      lines = [
+        {"deployment_started", %{sname: "myapp-abc", version: "0.4.1"},
+         "myapp-abc deployment started · version 0.4.1"},
+        {"deployment_started", %{sname: "deployex", version: "0.10.0"},
+         "DeployEx started · version 0.10.0"},
+        {"application_ready", %{sname: "myapp-abc", version: "0.4.1"},
+         "myapp-abc ready · version 0.4.1"},
+        {"deployment_shutdown", %{sname: "myapp-abc"}, "myapp-abc stopping"},
+        {"deployment_shutdown", %{sname: "deployex"}, "DeployEx stopping"},
+        {"deployment_complete", %{sname: "deployex", status: :ok, message: "shutdown"},
+         "DeployEx stopped"},
+        {"certificate_valid", %{app_name: "myapp", domains: ["myapp.com", "www.myapp.com"]},
+         "TLS certificate valid · myapp: myapp.com, www.myapp.com"},
+        {"deployment_complete",
+         %{sname: "myapp-abc", status: :ok, from_version: "0.4.0", to_version: "0.4.1"},
+         "myapp-abc hot upgraded · 0.4.0 -> 0.4.1"}
+      ]
+
+      for {event, payload, text} <- lines do
+        assert {_tone, ^text} = RecentEvents.line(recent(event, payload))
+      end
+
+      # An event this version does not know yet still gets its name and its instance
+      assert {:info, "some_new_event myapp-abc"} =
+               RecentEvents.line(recent("some_new_event", %{sname: "myapp-abc"}))
     end
   end
 
