@@ -154,6 +154,9 @@ defmodule Deployer.Engine.Worker do
     {deployments, deployment_to_terminate, available_ports} =
       build_deployments(replica_ports, replicas, {snames, versions}, fallback, stopped)
 
+    deployments =
+      mark_reopened_fall_back(deployments, {snames, versions}, fallback, ghosted_version_list)
+
     {:ok,
      %{
        state
@@ -613,6 +616,20 @@ defmodule Deployer.Engine.Worker do
   defp fallback_deployment(sname, version, ports),
     do: %Engine.Deployment{sname: sname, version: version, ports: ports, state: :active}
 
+  # A restart in the window of a fallback reopens it as one: the version kept to return to is
+  # ghosted, and another instance runs the version of the window
+  defp mark_reopened_fall_back(deployments, {[window | others], versions}, fallback, ghosted_list)
+       when fallback != nil do
+    ghosted = Enum.map(ghosted_list, & &1.version)
+    others_run_window? = Enum.any?(others, &(&1 != nil and versions[&1] == versions[window]))
+
+    if versions[fallback] in ghosted and others_run_window?,
+      do: put_in(deployments[1].fall_back?, true),
+      else: deployments
+  end
+
+  defp mark_reopened_fall_back(deployments, _snames, _fallback, _ghosted_list), do: deployments
+
   # With a fallback, the other instances on a sname are past their start up, as in an
   # uninterrupted window, and an empty one waits for the rollout. Those on an older version with
   # no monitor stay stopped, so no report moves the rollout on
@@ -842,12 +859,11 @@ defmodule Deployer.Engine.Worker do
     # with it, so a later report for the same deployment, e.g. after a crash restart,
     # is not taken for another one
     deployments =
-      Map.put(state.deployments, state.current, %{
-        current_deployment
-        | timer_ref: nil,
-          deploying?: false,
-          fall_back?: false
-      })
+      Map.put(
+        state.deployments,
+        state.current,
+        Map.merge(current_deployment, %{timer_ref: nil, deploying?: false, fall_back?: false})
+      )
 
     %{state | current: new_instance, deployments: deployments}
   end
@@ -1250,18 +1266,21 @@ defmodule Deployer.Engine.Worker do
         []
       )
 
-    # The version put into service runs, even over a sname that a restart kept stopped
+    # The version put into service runs, even over a sname that a restart kept stopped. A window
+    # that a restart reopens keeps fall_back?
     deployments =
-      Map.put(deployments, state.current, %{
-        current_deployment
-        | timer_ref: timer_ref,
+      Map.put(
+        deployments,
+        state.current,
+        Map.merge(current_deployment, %{
+          timer_ref: timer_ref,
           sname: sname,
           version: version,
           ports: ports,
           state: :active,
-          deploying?: true,
-          fall_back?: false
-      })
+          deploying?: true
+        })
+      )
 
     %{state | deployments: deployments}
   end
@@ -1330,8 +1349,10 @@ defmodule Deployer.Engine.Worker do
       })
     end)
 
+    # A new window is a fallback only when check_deployment/1 marks it as one
     state
     |> set_timeout_to_rollback(new_sname, release.version, available_ports)
+    |> put_in([Access.key!(:deployments), instance, Access.key(:fall_back?)], false)
     |> Map.put(:deployment_to_terminate, deployment_to_terminate)
     |> Map.put(:available_ports, [])
   end
@@ -1490,7 +1511,7 @@ defmodule Deployer.Engine.Worker do
       # a cast, so no schedule tick moves the rollout before it
       state
       |> put_in(
-        [Access.key!(:deployments), state.current, Access.key!(:version)],
+        [Access.key!(:deployments), state.current, Access.key(:version)],
         release.version
       )
       |> application_running(sname, complete?: false)

@@ -5567,6 +5567,123 @@ defmodule Deployer.EngineTest do
     end
 
     @tag :capture_log
+    test "A fallback deploys fully, also when its release offers a hot upgrade" do
+      name = "myelixir"
+      set_version = switchable_version_map("1.0.0")
+
+      with_mock System, [:passthrough],
+        cmd: fn "tar", ["-x", "-f", _source_path, "-C", _dest_path] -> {"", 0} end do
+        {worker_pid, versions} = start_replicas_on_one_version(name, 1_000)
+
+        # 1.0.0 could be a hot upgrade of 2.0.0, which a fallback does not take
+        Deployer.HotUpgradeMock
+        |> stub(:check, fn check ->
+          deploy = if check.to_version == "1.0.0", do: :hot_upgrade, else: :full_deployment
+          {:ok, %{check | deploy: deploy}}
+        end)
+        |> expect(:execute, 0, fn _execute -> :ok end)
+
+        set_version.("2.0.0")
+        assert_receive {:started, first_sname}, @step_timeout
+        Engine.notify_application_running(first_sname)
+        assert_receive {:started, _second_sname}, @step_timeout
+
+        assert_receive {:started, rollback_sname}, @step_timeout
+        Engine.notify_application_running(rollback_sname)
+
+        state = await_state(worker_pid, &(&1.current == 2))
+        assert %{1 => %{sname: ^rollback_sname}} = state.deployments
+        assert all_on?(state, versions, "1.0.0")
+      end
+    end
+
+    @tag :capture_log
+    test "A restart in a fallback window keeps it a fallback, so its failure does not ghost it" do
+      name = "myelixir"
+      test_pid = self()
+      switchable_version_map("2.0.0")
+
+      [window, ghosted_node, second, third] =
+        snames = for _ <- 1..4, do: Catalog.create_sname(name)
+
+      Enum.each(snames, &FixtureFiles.create_bin_files/1)
+      versions = :ets.new(:versions, [:public])
+
+      :ets.insert(versions, [
+        {window, "1.0.0"},
+        {ghosted_node, "2.0.0"},
+        {second, "1.0.0"},
+        {third, "1.0.0"}
+      ])
+
+      stub_full_deployments()
+
+      # DeployEx restarted while instance 1 fell back from 2.0.0, which this host ghosted, to 1.0.0
+      Deployer.StatusMock
+      |> stub(:ghosted_version_list, fn _name -> [%Catalog.Version{version: "2.0.0"}] end)
+      |> expect(:list_installed_apps, fn _name -> snames end)
+      |> stub(:history_version_list, fn _name, _options ->
+        [
+          %Catalog.Version{version: "1.0.0", sname: window, deployment: :full_deployment},
+          %Catalog.Version{version: "2.0.0", sname: ghosted_node, deployment: :full_deployment},
+          %Catalog.Version{version: "1.0.0", sname: second, deployment: :full_deployment},
+          %Catalog.Version{version: "1.0.0", sname: third, deployment: :full_deployment}
+        ]
+      end)
+      |> stub(:current_version, fn sname ->
+        case :ets.lookup(versions, sname) do
+          [{^sname, version}] -> version
+          [] -> nil
+        end
+      end)
+      |> stub(:set_current_version_map, fn sname, %{version: version}, _attrs ->
+        :ets.insert(versions, {sname, version})
+        :ok
+      end)
+      |> stub(:current_version_map, fn sname ->
+        [{^sname, version}] = :ets.lookup(versions, sname)
+        %Catalog.Version{version: version, sname: sname}
+      end)
+      |> expect(:add_ghosted_version, 0, fn version_map -> {:ok, [version_map]} end)
+
+      # The monitors still run, and the fallback on instance 1 has not reported running yet
+      Deployer.MonitorMock
+      |> stub(:start_service, fn %{sname: sname} ->
+        if sname in snames do
+          {:error, {:already_started, self()}}
+        else
+          send(test_pid, {:started, sname})
+          {:ok, self()}
+        end
+      end)
+      |> stub(:state, fn
+        ^window ->
+          %Deployer.Monitor{sname: window, status: :starting, ports: []}
+
+        sname ->
+          %Deployer.Monitor{sname: sname, current_pid: self(), status: :running, ports: []}
+      end)
+      |> stub(:stop_service, fn _name, sname ->
+        send(test_pid, {:stopped, sname})
+        :ok
+      end)
+
+      with_mock System, [:passthrough],
+        cmd: fn "tar", ["-x", "-f", _source_path, "-C", _dest_path] -> {"", 0} end do
+        worker_pid = start_replicas(name, 1_000)
+
+        assert %{1 => %{sname: ^window, fall_back?: true}} =
+                 :sys.get_state(worker_pid).deployments
+
+        # The reopened window fails, 1.0.0 is not ghosted, and instance 1 tries it again
+        assert_receive {:stopped, ^window}, @step_timeout
+        assert_receive {:started, retry_sname}, @step_timeout
+        refute retry_sname in snames
+        assert [%{version: "2.0.0"}] = :sys.get_state(worker_pid).ghosted_version_list
+      end
+    end
+
+    @tag :capture_log
     test "A fallback that fails its window is not ghosted and is tried again" do
       name = "myelixir"
       set_version = switchable_version_map("1.0.0")
