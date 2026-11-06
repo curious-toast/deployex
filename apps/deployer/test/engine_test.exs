@@ -3997,6 +3997,13 @@ defmodule Deployer.EngineTest do
         Foundation.Notifications.topic("application_ready")
       )
     end
+
+    defp subscribe_to_deployment_rollback do
+      Phoenix.PubSub.subscribe(
+        Foundation.PubSub,
+        Foundation.Notifications.topic("deployment_rollback")
+      )
+    end
   end
 
   describe "Ghosted version list" do
@@ -5495,6 +5502,7 @@ defmodule Deployer.EngineTest do
       with_mock System, [:passthrough],
         cmd: fn "tar", ["-x", "-f", _source_path, "-C", _dest_path] -> {"", 0} end do
         {worker_pid, versions} = start_replicas_on_one_version(name, 1_000)
+        subscribe_to_deployment_rollback()
 
         set_version.("2.0.0")
         assert_receive {:started, first_sname}, @step_timeout
@@ -5505,6 +5513,11 @@ defmodule Deployer.EngineTest do
 
         # current.json still names 2.0.0. Instance 1 leaves it for 1.0.0, which the others run
         assert_receive {:started, rollback_sname}, @step_timeout
+
+        assert_receive {"deployment_rollback",
+                        %{sname: ^first_sname, from_version: "2.0.0", to_version: "1.0.0"}},
+                       @step_timeout
+
         Engine.notify_application_running(rollback_sname)
 
         state = await_state(worker_pid, &(&1.current == 2))
@@ -5514,6 +5527,75 @@ defmodule Deployer.EngineTest do
 
         # The ghosted target moves nothing else
         refute_receive {:started, _sname}, 300
+        refute_received {"deployment_rollback", _payload}
+      end
+    end
+
+    @tag :capture_log
+    test "A fallback whose download fails once is reported once, when it starts" do
+      name = "myelixir"
+      set_version = switchable_version_map("1.0.0")
+
+      with_mock System, [:passthrough],
+        cmd: fn "tar", ["-x", "-f", _source_path, "-C", _dest_path] -> {"", 0} end do
+        {worker_pid, versions} = start_replicas_on_one_version(name, 1_000)
+        subscribe_to_deployment_rollback()
+
+        # The first download of the fallback version fails, the next one passes
+        failed = :ets.new(:failed, [:public])
+
+        stub(Deployer.ReleaseMock, :download_release, fn _name, version, _path ->
+          if version == "1.0.0" and :ets.insert_new(failed, {:once}),
+            do: {:error, :test},
+            else: :ok
+        end)
+
+        set_version.("2.0.0")
+        assert_receive {:started, first_sname}, @step_timeout
+        Engine.notify_application_running(first_sname)
+        assert_receive {:started, _second_sname}, @step_timeout
+
+        assert_receive {:started, rollback_sname}, @step_timeout
+        assert_receive {"deployment_rollback", %{sname: ^first_sname}}, @step_timeout
+        Engine.notify_application_running(rollback_sname)
+
+        state = await_state(worker_pid, &(&1.current == 2))
+        assert all_on?(state, versions, "1.0.0")
+        assert :ets.member(failed, :once)
+        refute_received {"deployment_rollback", _payload}
+      end
+    end
+
+    @tag :capture_log
+    test "A fallback that fails its window is not ghosted and is tried again" do
+      name = "myelixir"
+      set_version = switchable_version_map("1.0.0")
+
+      with_mock System, [:passthrough],
+        cmd: fn "tar", ["-x", "-f", _source_path, "-C", _dest_path] -> {"", 0} end do
+        {worker_pid, versions} = start_replicas_on_one_version(name, 1_000)
+        subscribe_to_deployment_rollback()
+
+        set_version.("2.0.0")
+        assert_receive {:started, first_sname}, @step_timeout
+        Engine.notify_application_running(first_sname)
+        assert_receive {:started, _second_sname}, @step_timeout
+
+        # The fallback of instance 1 never reports running, so its window fails as well
+        assert_receive {:started, _failed_sname}, @step_timeout
+        assert_receive {"deployment_rollback", %{sname: ^first_sname}}, @step_timeout
+
+        # 1.0.0 stays usable, and instance 1 tries it again from the 2.0.0 node it still runs
+        assert_receive {:started, retry_sname}, @step_timeout
+
+        assert_receive {"deployment_rollback", %{sname: ^first_sname, to_version: "1.0.0"}},
+                       @step_timeout
+
+        Engine.notify_application_running(retry_sname)
+
+        state = await_state(worker_pid, &(&1.current == 2))
+        assert [%{version: "2.0.0"}] = state.ghosted_version_list
+        assert all_on?(state, versions, "1.0.0")
       end
     end
 
@@ -5612,7 +5694,7 @@ defmodule Deployer.EngineTest do
     test "code_change gives each deployment of a state from an older version its version" do
       sname = Catalog.create_sname("myelixir")
       stub(Deployer.StatusMock, :current_version, fn ^sname -> "1.0.0" end)
-      old_deployment = &Map.delete(%Engine.Deployment{sname: &1}, :version)
+      old_deployment = &Map.drop(%Engine.Deployment{sname: &1}, [:version, :fall_back?])
 
       old_state = %Engine.Worker{
         name: "myelixir",
@@ -5621,8 +5703,11 @@ defmodule Deployer.EngineTest do
       }
 
       assert {:ok, state} = Engine.Worker.code_change("0.10.0", old_state, [])
-      assert %{1 => %{version: "1.0.0"}, 2 => %{version: nil}} = state.deployments
-      assert %{version: "1.0.0"} = state.deployment_to_terminate
+
+      assert %{1 => %{version: "1.0.0", fall_back?: false}, 2 => %{version: nil}} =
+               state.deployments
+
+      assert %{version: "1.0.0", fall_back?: false} = state.deployment_to_terminate
     end
   end
 

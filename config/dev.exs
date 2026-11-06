@@ -185,7 +185,8 @@ config :foundation,
     #     "config_changed",
     #     "config_change_applied",
     #     "pre_command_failed",
-    #     "version_ghosted"
+    #     "version_ghosted",
+    #     "deployment_rollback"
     #   ],
     #   options: %{}
     # }

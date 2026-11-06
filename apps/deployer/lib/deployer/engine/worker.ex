@@ -279,24 +279,27 @@ defmodule Deployer.Engine.Worker do
       if instance == state.current and sname == current_deployment.sname do
         sname = current_deployment.sname
         ports = current_deployment.ports
+        version_map = Status.current_version_map(sname)
+        fall_back? = Map.get(current_deployment, :fall_back?, false)
 
-        Logger.warning(
-          "The instance: #{instance} sname: #{sname} ports: #{inspect(ports)} is not stable, ghosting version"
-        )
+        if fall_back? do
+          Logger.warning(
+            "The instance: #{instance} sname: #{sname} ports: #{inspect(ports)} is not stable, keeping fallback version #{version_map.version} for the next try"
+          )
+        else
+          Logger.warning(
+            "The instance: #{instance} sname: #{sname} ports: #{inspect(ports)} is not stable, ghosting version"
+          )
+        end
 
         Monitor.stop_service(name, sname)
         Catalog.cleanup(sname)
 
-        # Add current version to the ghosted version list
-        version_map = Status.current_version_map(sname)
-        {:ok, new_list} = Status.add_ghosted_version(version_map)
-
-        notify_version_ghosted(
-          name,
-          sname,
-          version_map.version,
-          "not running within deploy_rollback_timeout_ms"
-        )
+        # A fallback that fails is not ghosted, so this host keeps a version to go back to
+        new_list =
+          if fall_back?,
+            do: state.ghosted_version_list,
+            else: ghost_version(name, sname, version_map)
 
         # Return deployment to the current one. When the rollback timer was
         # armed by the initial boot there is no previous deployment to return
@@ -518,23 +521,24 @@ defmodule Deployer.Engine.Worker do
 
   defp schedule_new_deployment(timeout), do: Process.send_after(self(), :schedule, timeout)
 
-  # An older version built the state without pending_pre_commands, or deployments without a version
+  # An older version built the state without pending_pre_commands, or deployments without a field
   defp upgrade_state(state) do
     state
     |> Map.put_new(:pending_pre_commands, nil)
     |> Map.update!(
       :deployments,
-      &Map.new(&1, fn {i, deployment} -> {i, put_version(deployment)} end)
+      &Map.new(&1, fn {i, deployment} -> {i, upgrade_deployment(deployment)} end)
     )
-    |> Map.update!(:deployment_to_terminate, &put_version/1)
+    |> Map.update!(:deployment_to_terminate, &upgrade_deployment/1)
   end
 
-  defp put_version(%{version: _version} = deployment), do: deployment
+  defp upgrade_deployment(nil), do: nil
 
-  defp put_version(%{sname: sname} = deployment),
-    do: Map.put(deployment, :version, sname && Status.current_version(sname))
-
-  defp put_version(nil), do: nil
+  defp upgrade_deployment(%{sname: sname} = deployment) do
+    deployment
+    |> Map.put_new_lazy(:version, fn -> sname && Status.current_version(sname) end)
+    |> Map.put_new(:fall_back?, false)
+  end
 
   defp build_ports_by_index(replica_ports, index) do
     Enum.map(replica_ports, fn port -> %{port | base: port.base + index} end)
@@ -841,7 +845,8 @@ defmodule Deployer.Engine.Worker do
       Map.put(state.deployments, state.current, %{
         current_deployment
         | timer_ref: nil,
-          deploying?: false
+          deploying?: false,
+          fall_back?: false
       })
 
     %{state | current: new_instance, deployments: deployments}
@@ -869,6 +874,7 @@ defmodule Deployer.Engine.Worker do
     release = Release.get_current_version_map(name)
     target = target(state, release)
     stopped? = state.deployments[current].state == :stopped
+    fall_back? = match?({:fall_back, _release, _ghosted}, target)
 
     deploy_application = fn %{version: release_version} = release ->
       new_sname = new_sname(name)
@@ -887,8 +893,9 @@ defmodule Deployer.Engine.Worker do
         {:ok, :full_deployment} ->
           full_deployment(state, new_sname, release)
 
-        # A sname that a restart kept stopped has no node to upgrade
-        {:ok, :hot_upgrade} when stopped? ->
+        # A sname that a restart kept stopped has no node to upgrade. A fallback deploys fully, so
+        # its failure goes through its window and does not ghost it
+        {:ok, :hot_upgrade} when stopped? or fall_back? ->
           full_deployment(state, new_sname, release)
 
         {:ok, :hot_upgrade} ->
@@ -912,7 +919,16 @@ defmodule Deployer.Engine.Worker do
           "Update is needed at sname: #{current_sname} from: #{version} to: #{release_version}"
         )
 
-        deploy_application.(release)
+        new_state = deploy_application.(release)
+
+        # The engine worker rolls the instance back on its own, so it reports it once the deployment
+        # starts and marks its window. A failed download leaves the state as it was
+        if fall_back? and new_state != state do
+          notify_deployment_rollback(name, current_sname, current_version, release_version)
+          put_in(new_state.deployments[current].fall_back?, true)
+        else
+          new_state
+        end
 
       # Up to date, a sname that a restart kept stopped starts as at start up
       stopped? ->
@@ -1243,7 +1259,8 @@ defmodule Deployer.Engine.Worker do
           version: version,
           ports: ports,
           state: :active,
-          deploying?: true
+          deploying?: true,
+          fall_back?: false
       })
 
     %{state | deployments: deployments}
@@ -1379,6 +1396,31 @@ defmodule Deployer.Engine.Worker do
       sname: sname,
       version: to_string(version),
       reason: reason
+    })
+  end
+
+  defp ghost_version(name, sname, version_map) do
+    {:ok, ghosted_version_list} = Status.add_ghosted_version(version_map)
+
+    notify_version_ghosted(
+      name,
+      sname,
+      version_map.version,
+      "not running within deploy_rollback_timeout_ms"
+    )
+
+    ghosted_version_list
+  end
+
+  # The fallback leaves a version that this host ghosted, current.json still names it
+  defp notify_deployment_rollback(name, sname, from_version, to_version) do
+    Foundation.Notifications.notify("deployment_rollback", %{
+      node: node(),
+      name: name,
+      sname: sname,
+      from_version: to_string(from_version),
+      to_version: to_string(to_version),
+      reason: "#{from_version} is ghosted on this host"
     })
   end
 

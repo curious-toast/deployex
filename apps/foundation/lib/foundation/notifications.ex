@@ -31,6 +31,7 @@ defmodule Foundation.Notifications do
   | `"config_change_applied"`         | Pending config changes were successfully applied           | `node`, `changes_count`, `fields`                                           |
   | `"pre_command_failed"`            | A pre-command failed. Retries report each command once     | `node`, `sname`, `name`, `command`, `reason`                                |
   | `"version_ghosted"`               | A version was ghosted, this host does not deploy it again  | `node`, `sname`, `name`, `version`, `reason`                                |
+  | `"deployment_rollback"`           | An instance starts to go back from a version ghosted here  | `node`, `sname`, `name`, `from_version`, `to_version`, `reason`             |
 
   ## Available adapters
 

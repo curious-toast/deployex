@@ -234,6 +234,21 @@ defmodule Foundation.Notifications.SlackTest do
         assert_receive {:text, text}
         assert text =~ "*version_ghosted* — `myapp` *1.1.0* on `n@h`"
         assert text =~ "not running within deploy_rollback_timeout_ms"
+
+        payload = %{
+          node: :n@h,
+          sname: "s-1",
+          name: "myapp",
+          from_version: "1.1.0",
+          to_version: "1.0.0",
+          reason: "1.1.0 is ghosted on this host"
+        }
+
+        assert :ok = Slack.notify("deployment_rollback", payload, @config)
+        assert_receive {:text, text}
+        assert text =~ "*deployment_rollback* — `s-1` on `n@h`"
+        assert text =~ "From *1.1.0* to *1.0.0*"
+        assert text =~ "1.1.0 is ghosted on this host"
       end
     end
   end

@@ -209,7 +209,16 @@ defmodule Foundation.Notifications.PagerDutyTest do
          %{node: :n@h, sname: "s", name: "app", command: "eval M.run", reason: ":enoent"},
          "error"},
         {"version_ghosted",
-         %{node: :n@h, sname: "s", name: "app", version: "1.0", reason: "not running"}, "error"}
+         %{node: :n@h, sname: "s", name: "app", version: "1.0", reason: "not running"}, "error"},
+        {"deployment_rollback",
+         %{
+           node: :n@h,
+           sname: "s",
+           name: "app",
+           from_version: "1.1",
+           to_version: "1.0",
+           reason: "1.1 is ghosted on this host"
+         }, "warning"}
       ]
 
       test_pid = self()
