@@ -22,6 +22,7 @@ defmodule Deployer.Status.Application do
   @ghosted_versions_topic "deployex::ghosted_versions"
 
   @manual_version_max_list 10
+  @mtls_certificate_refresh_seconds 3_600
 
   ### ==========================================================================
   ### Callback GenServer functions
@@ -98,10 +99,10 @@ defmodule Deployer.Status.Application do
 
         config = Catalog.config(name)
 
-        last_ghosted_version =
+        {last_ghosted_version, last_ghosted_at} =
           case ghosted_version_list(name) do
-            [] -> "-/-"
-            list -> Enum.at(list, 0).version
+            [] -> {"-/-", nil}
+            [latest | _] -> {latest.version, deployed_at(latest)}
           end
 
         versions =
@@ -113,6 +114,7 @@ defmodule Deployer.Status.Application do
 
         current_config = %{
           last_ghosted_version: last_ghosted_version,
+          last_ghosted_at: last_ghosted_at,
           mode: config.mode,
           manual_version: config.manual_version,
           versions: versions
@@ -209,8 +211,13 @@ defmodule Deployer.Status.Application do
     version |> Catalog.add_ghosted_version() |> broadcast_ghosted_versions(name)
   end
 
+  # Newest first. The catalog lists the files in directory order, so its head can be any version
   @impl true
-  def ghosted_version_list(name), do: Catalog.ghosted_versions(name)
+  def ghosted_version_list(name) do
+    name
+    |> Catalog.ghosted_versions()
+    |> Enum.sort_by(&(&1.inserted_at || ~N[0000-01-01 00:00:00]), {:desc, NaiveDateTime})
+  end
 
   @impl true
   def remove_ghosted_version(name, version) do
@@ -333,6 +340,7 @@ defmodule Deployer.Status.Application do
       status: :running,
       uptime: uptime,
       started_at: deployex_started_at(),
+      resources: Deployer.Resources.get(name),
       latest_release: deployex_latest_release,
       monitoring: Application.get_env(:foundation, :monitoring),
       certificates: certificates,
@@ -365,7 +373,14 @@ defmodule Deployer.Status.Application do
         :not_connected
     end
 
-    otp = check_otp_monitored_app.(node, status)
+    # A hot upgrade's pre_commands run while the instance runs, so it stays connected
+    otp =
+      check_otp_monitored_app.(
+        node,
+        if(Monitor.serving?(monitor_state), do: :running, else: status)
+      )
+
+    version_map = current_version_map(sname)
 
     %Status{
       name: name,
@@ -376,13 +391,20 @@ defmodule Deployer.Status.Application do
       version: current_version(sname),
       otp: otp,
       tls: mtls_certificate(),
-      last_deployment: current_version_map(sname).deployment,
+      last_deployment: version_map.deployment,
       status: status,
+      failed_pre_commands: failed_pre_commands(monitor_state),
       crash_restart_count: crash_restart_count,
       force_restart_count: force_restart_count,
+      # A monitor state written before a relup has no restart history until its next update
+      watchdog_restart_count: Map.get(monitor_state, :watchdog_restart_count, 0),
+      restarts: Map.get(monitor_state, :restarts, []),
       uptime: Common.uptime_to_string(start_time),
       # A monitor state written before a relup has no started_at until its next update
       started_at: Map.get(monitor_state, :started_at),
+      deployed_at: deployed_at(version_map),
+      last_crash_at: Map.get(monitor_state, :last_crash_at),
+      resources: Deployer.Resources.get(sname),
       language: language,
       monitoring: monitoring,
       otp_version: node_otp_version(node),
@@ -392,14 +414,23 @@ defmodule Deployer.Status.Application do
     }
   end
 
+  # The catalog writes inserted_at in UTC when the version becomes current or ghosted
+  defp deployed_at(%{inserted_at: %NaiveDateTime{} = inserted_at}),
+    do: DateTime.from_naive!(inserted_at, "Etc/UTC") |> DateTime.truncate(:second)
+
+  defp deployed_at(_version_map), do: nil
+
+  # Read again every hour, so the days to its expiry stay current while the process runs
   defp mtls_certificate do
-    case Process.get(:mtls_certificate, :not_fetched) do
-      :not_fetched ->
-        value = Common.mtls_certificate()
-        Process.put(:mtls_certificate, value)
+    now = System.monotonic_time(:second)
+
+    case Process.get(:mtls_certificate) do
+      {value, read_at} when now - read_at < @mtls_certificate_refresh_seconds ->
         value
 
-      value ->
+      _stale ->
+        value = Common.mtls_certificate()
+        Process.put(:mtls_certificate, {value, now})
         value
     end
   end
@@ -422,6 +453,12 @@ defmodule Deployer.Status.Application do
       end
     end
   end
+
+  # The monitor keeps the failed pre_commands while it retries them, and drops them once they pass
+  defp failed_pre_commands(%{status: :pre_commands} = monitor_state),
+    do: Map.get(monitor_state, :reported_pre_commands, [])
+
+  defp failed_pre_commands(_monitor_state), do: []
 
   # Converted once, since the offset between monotonic and wall clock time can move
   defp deployex_started_at do

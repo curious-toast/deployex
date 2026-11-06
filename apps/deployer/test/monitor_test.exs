@@ -42,6 +42,19 @@ defmodule Deployer.MonitorTest do
     }
   end
 
+  test "serving? counts a running instance and one in a hot upgrade's pre_commands" do
+    assert Deployer.Monitor.serving?(%Deployer.Monitor{status: :running})
+
+    assert Deployer.Monitor.serving?(%Deployer.Monitor{
+             status: :pre_commands,
+             current_pid: self()
+           })
+
+    refute Deployer.Monitor.serving?(%Deployer.Monitor{status: :pre_commands})
+    refute Deployer.Monitor.serving?(%Deployer.Monitor{status: :starting, current_pid: self()})
+    refute Deployer.Monitor.serving?(nil)
+  end
+
   describe "Initialization tests" do
     @tag :capture_log
     test "init/1", %{elixir_name: name, elixir_sname: sname, ports: ports} do
@@ -696,6 +709,59 @@ defmodule Deployer.MonitorTest do
     end
 
     @tag :capture_log
+    test "pre_commands that pass after a failure clear the failed list for the next run", %{
+      elixir_name: name,
+      elixir_sname: sname,
+      ports: ports
+    } do
+      test_pid = self()
+      FixtureFiles.create_bin_files(sname)
+
+      Deployer.StatusMock
+      |> stub(:current_version_map, fn ^sname ->
+        %Catalog.Version{version: "1.0.0", pre_commands: ["eval Migrate.run"]}
+      end)
+
+      Host.CommanderMock
+      |> stub(:run_link, fn _command, _options -> {:ok, test_pid, 123_456} end)
+      |> stub(:run, fn command, _options ->
+        if command =~ "eval Migrate.run" do
+          attempt = Process.get(:attempt, 0) + 1
+          Process.put(:attempt, attempt)
+          # What the status reads while this attempt runs
+          send(test_pid, {:during, attempt, MonitorApp.state(sname)})
+          if attempt == 1, do: {:error, [exit_status: 256]}, else: {:ok, test_pid}
+        else
+          {:ok, test_pid}
+        end
+      end)
+      |> stub(:stop, fn _pid -> :ok end)
+
+      assert {:ok, _pid} =
+               MonitorApp.start_service(%Service{
+                 name: name,
+                 sname: sname,
+                 language: "elixir",
+                 ports: ports,
+                 timeout_app_ready: 10,
+                 retry_delay_pre_commands: 10
+               })
+
+      assert_receive {:during, 1, %{status: :pre_commands, reported_pre_commands: []}}, 1_000
+
+      assert_receive {:during, 2,
+                      %{status: :pre_commands, reported_pre_commands: ["eval Migrate.run"]}},
+                     1_000
+
+      # A restart runs them again, and that run has no failure yet
+      Process.sleep(100)
+      assert :ok = MonitorApp.restart(sname)
+      assert_receive {:during, 3, %{status: :pre_commands, reported_pre_commands: []}}, 3_000
+
+      assert :ok = MonitorApp.stop_service(name, sname)
+    end
+
+    @tag :capture_log
     test "Check the application doesn't change to running with invalid ref", %{
       elixir_name: name,
       elixir_sname: sname,
@@ -957,6 +1023,41 @@ defmodule Deployer.MonitorTest do
     end
 
     @tag :capture_log
+    test "An instance keeps its latest restarts, newest first, with their cause", context do
+      monitor = start_running_monitor(context, fn _command -> exit_pre_command(:normal) end)
+      %{current_pid: app_pid} = :sys.get_state(monitor)
+
+      assert :ok =
+               MonitorApp.restart(context.elixir_sname, cause: :watchdog, detail: "process 91%")
+
+      assert %{
+               force_restart_count: 1,
+               watchdog_restart_count: 1,
+               restarts: [%{cause: :watchdog, detail: "process 91%", at: %DateTime{}}]
+             } = :sys.get_state(monitor)
+
+      # The instance runs again, then crashes
+      :sys.replace_state(monitor, &%{&1 | current_pid: app_pid})
+      send(monitor, {:EXIT, app_pid, {:exit_status, 256}})
+
+      assert %{restarts: [%{cause: :crash, detail: nil}, %{cause: :watchdog}]} =
+               :sys.get_state(monitor)
+
+      # An operator restart counts apart from the watchdog's, and only the latest 10 stay
+      old = for _ <- 1..10, do: %{at: ~U[2026-10-01 00:00:00Z], cause: :crash, detail: nil}
+      :sys.replace_state(monitor, &%{&1 | current_pid: app_pid, restarts: old})
+      assert :ok = MonitorApp.restart(context.elixir_sname)
+
+      assert %{watchdog_restart_count: 1, force_restart_count: 2, restarts: restarts} =
+               :sys.get_state(monitor)
+
+      assert [%{cause: :operator} | _] = restarts
+      assert length(restarts) == 10
+
+      assert :ok = MonitorApp.stop_service(context.elixir_name, context.elixir_sname)
+    end
+
+    @tag :capture_log
     test "A request while a restart is starting the application is busy", context do
       start_running_monitor(context, fn _command -> exit_pre_command(:normal) end)
 
@@ -1126,7 +1227,9 @@ defmodule Deployer.MonitorTest do
 
     test "code_change adds the new fields to a state from an older version" do
       state = %Deployer.Monitor{sname: "myelixir-abc"}
-      old_state = Map.drop(state, [:pre_commands_run, :reported_pre_commands, :started_at])
+
+      old_state =
+        Map.drop(state, [:pre_commands_run, :reported_pre_commands, :started_at, :last_crash_at])
 
       assert {:ok, ^state} = MonitorApp.code_change("0.10.0", old_state, [])
 
@@ -1186,8 +1289,11 @@ defmodule Deployer.MonitorTest do
 
       assert_receive {:handle_restart_event, ^test_event_ref}, 1_000
 
-      # Check restart was increased
-      assert %{status: :running, crash_restart_count: 1} = MonitorApp.state(sname)
+      # Check restart was increased, with the time of the crash
+      assert %{status: :running, crash_restart_count: 1, last_crash_at: %DateTime{} = crashed_at} =
+               MonitorApp.state(sname)
+
+      assert DateTime.diff(DateTime.utc_now(), crashed_at) in 0..2
 
       assert :ok = MonitorApp.stop_service(name, sname)
     end
@@ -1599,7 +1705,7 @@ defmodule Deployer.MonitorTest do
     |> expect(:start_service, fn _service -> {:ok, self()} end)
     |> expect(:stop_service, fn _name, _sname -> :ok end)
     |> expect(:state, fn _sname -> {:ok, %{}} end)
-    |> expect(:restart, fn _sname -> :ok end)
+    |> expect(:restart, fn _sname, [] -> :ok end)
     |> expect(:run_pre_commands, fn _sname, cmds, _new_or_current -> {:ok, cmds} end)
     |> expect(:start_pre_commands, fn _sname, _cmds, _new_or_current -> {:ok, make_ref()} end)
     |> expect(:cancel_pre_commands, fn _sname, _ref -> :ok end)

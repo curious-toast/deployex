@@ -125,6 +125,23 @@ defmodule Deployer.Status.ApplicationTest do
     assert length(StatusApp.ghosted_version_list(name_1)) == 2
   end
 
+  test "ghosted_version_list/1 lists the newest version first", %{
+    name_1: name_1,
+    sname_1: sname_1
+  } do
+    version_map = StatusApp.current_version_map(sname_1)
+
+    for {version, at} <- [
+          {"2.0.0", ~N[2026-10-30 10:00:00]},
+          {"1.0.0", ~N[2026-10-01 10:00:00]},
+          {"3.0.0", ~N[2026-11-01 10:00:00]}
+        ],
+        do: StatusApp.add_ghosted_version(%{version_map | version: version, inserted_at: at})
+
+    assert ["3.0.0", "2.0.0", "1.0.0"] =
+             Enum.map(StatusApp.ghosted_version_list(name_1), & &1.version)
+  end
+
   test "remove_ghosted_version/2 and clear_ghosted_versions/1", %{
     name_1: name_1,
     sname_1: sname_1
@@ -244,6 +261,35 @@ defmodule Deployer.Status.ApplicationTest do
            )
   end
 
+  test "the DeployEx certificate is read again after an hour, so its expiry stays current", %{
+    sname_1: sname_1
+  } do
+    Deployer.MonitorMock
+    |> stub(:state, fn sname -> %Deployer.Monitor{sname: sname, status: :idle} end)
+    |> stub(:list, fn -> [sname_1] end)
+
+    stub(Foundation.RpcMock, :call, fn _node, _module, _functions, _args, _timeout -> nil end)
+
+    stale = %Foundation.Certificates.PublicKey{expires_in_days: 30}
+
+    deployex_tls = fn ->
+      {:noreply, %{monitoring: monitoring}} =
+        StatusApp.handle_info(:update_apps, %{monitoring: []})
+
+      Enum.find(monitoring, &(&1.name == "deployex")).tls
+    end
+
+    # Read a minute ago, the cached certificate stays
+    Process.put(:mtls_certificate, {stale, System.monotonic_time(:second) - 60})
+    assert deployex_tls.() == stale
+
+    # Read over an hour ago, the file is read again, and a test node has none
+    Process.put(:mtls_certificate, {stale, System.monotonic_time(:second) - 3_601})
+    assert deployex_tls.() == nil
+  after
+    Process.delete(:mtls_certificate)
+  end
+
   test "update monitoring apps with running state and otp not connected", %{
     sname_1: sname_1,
     sname_2: sname_2,
@@ -335,6 +381,80 @@ defmodule Deployer.Status.ApplicationTest do
 
     assert Enum.sort(started) ==
              Enum.sort([{sname_1, started_at}, {sname_2, nil}, {sname_3, nil}])
+  end
+
+  test "update monitoring apps reports the deploy time, the last crash and the resources", %{
+    sname_1: sname_1,
+    sname_2: sname_2,
+    sname_3: sname_3
+  } do
+    crashed_at = ~U[2026-10-28 09:30:00Z]
+
+    Deployer.MonitorMock
+    |> expect(:state, 3, fn
+      ^sname_1 ->
+        %Deployer.Monitor{sname: sname_1, status: :running, last_crash_at: crashed_at}
+
+      # A failed pre_command is kept while the monitor retries it
+      ^sname_2 ->
+        %Deployer.Monitor{
+          sname: sname_2,
+          status: :pre_commands,
+          reported_pre_commands: ["eval 1"]
+        }
+
+      # A monitor state written before a relup has no last_crash_at
+      sname ->
+        Map.delete(%Deployer.Monitor{sname: sname, status: :running}, :last_crash_at)
+    end)
+    |> expect(:list, 1, fn -> [sname_1, sname_2, sname_3] end)
+
+    Deployer.HotUpgradeMock
+    |> stub(:connect, fn _node -> {:error, :not_connecting} end)
+
+    Foundation.RpcMock
+    |> stub(:call, fn _node, _module, _functions, _args, _timeout -> nil end)
+
+    assert {:noreply, %{monitoring: monitoring}} =
+             StatusApp.handle_info(:update_apps, %{monitoring: []})
+
+    children = for app <- monitoring, child <- app.children, into: %{}, do: {child.sname, child}
+
+    assert %{deployed_at: %DateTime{} = deployed_at, last_crash_at: ^crashed_at, resources: nil} =
+             children[sname_1]
+
+    assert DateTime.diff(DateTime.utc_now(), deployed_at) in 0..5
+    assert %{last_crash_at: nil, failed_pre_commands: ["eval 1"]} = children[sname_2]
+    assert %{deployed_at: %DateTime{}, failed_pre_commands: []} = children[sname_3]
+  end
+
+  test "an instance in a hot upgrade's pre_commands stays connected, a starting one does not", %{
+    sname_1: sname_1,
+    sname_2: sname_2,
+    sname_3: sname_3
+  } do
+    Deployer.MonitorMock
+    |> expect(:state, 3, fn
+      # A hot upgrade's pre_commands run while the instance runs
+      ^sname_1 -> %Deployer.Monitor{sname: sname_1, status: :pre_commands, current_pid: self()}
+      # Start up pre_commands run before the instance has a pid
+      sname -> %Deployer.Monitor{sname: sname, status: :pre_commands, current_pid: nil}
+    end)
+    |> expect(:list, 1, fn -> [sname_1, sname_2, sname_3] end)
+
+    Deployer.HotUpgradeMock
+    |> stub(:connect, fn _node -> {:ok, :connected} end)
+
+    Foundation.RpcMock
+    |> stub(:call, fn _node, _module, _functions, _args, _timeout -> nil end)
+
+    assert {:noreply, %{monitoring: monitoring}} =
+             StatusApp.handle_info(:update_apps, %{monitoring: []})
+
+    children = for app <- monitoring, child <- app.children, into: %{}, do: {child.sname, child}
+
+    assert %{status: :pre_commands, otp: :connected} = children[sname_1]
+    assert %{status: :pre_commands, otp: :not_connected} = children[sname_2]
   end
 
   test "update monitoring apps with running state and otp connected", %{
@@ -496,6 +616,10 @@ defmodule Deployer.Status.ApplicationTest do
 
     parent_app = Enum.find(monitoring, &(&1.name == name_1))
     assert parent_app.config.last_ghosted_version == ghosted_version
+    assert %DateTime{} = parent_app.config.last_ghosted_at
+
+    assert %{last_ghosted_version: "-/-", last_ghosted_at: nil} =
+             Enum.find(monitoring, &(&1.name == "myerlang")).config
 
     assert Enum.find(
              monitoring,

@@ -141,7 +141,7 @@ defmodule Sentinel.Watchdog do
           label: "[#{node}] #{type}",
           node: node,
           repeat_restart: true,
-          restart: fn -> restart_application(node) end
+          restart: fn percent -> restart_application(node, "#{type} #{percent}%") end
         }
 
         with_percentage(config, get_app_data(node, type), &check_level(resource, config, &1))
@@ -160,7 +160,9 @@ defmodule Sentinel.Watchdog do
         label: "Total Memory",
         node: Node.self(),
         repeat_restart: true,
-        restart: fn -> restart_top_memory_consumer(top_consumer_node) end
+        restart: fn percent ->
+          restart_top_memory_consumer(top_consumer_node, "host memory #{percent}%")
+        end
       }
 
       with_percentage(config, get_deployex_data(:memory), &check_level(resource, config, &1))
@@ -177,7 +179,7 @@ defmodule Sentinel.Watchdog do
           label: "[deployex] #{type}",
           node: Node.self(),
           repeat_restart: false,
-          restart: fn -> terminate_deployex(deployex_terminate_delay) end
+          restart: fn _percent -> terminate_deployex(deployex_terminate_delay) end
         }
 
         :restarting ==
@@ -325,6 +327,28 @@ defmodule Sentinel.Watchdog do
     config
   end
 
+  @doc """
+  Returns the last sample and the config of each resource the Watchdog checks for an instance node, or for
+  DeployEx with `:deployex`. A resource with no sample yet is left out, and so is every resource when the
+  Watchdog does not run.
+  """
+  @spec usage(owner :: node() | :deployex) :: %{atom() => {Data.t(), t()}}
+  def usage(owner) do
+    types = if owner == :deployex, do: [:memory | @deployex_limits], else: @monitored_app_limits
+
+    if :ets.whereis(@watchdog_data) == :undefined do
+      %{}
+    else
+      for type <- types,
+          [{_, %Data{current: current, limit: limit} = data}] <-
+            [:ets.lookup(@watchdog_data, {owner, :data, type})],
+          is_integer(current) and is_integer(limit) and limit > 0,
+          [{_, config}] <- [:ets.lookup(@watchdog_data, {owner, :config, type})],
+          into: %{},
+          do: {type, {data, config}}
+    end
+  end
+
   @spec reset_app_statistics(name :: String.t()) :: :ok
   def reset_app_statistics(name) do
     GenServer.call(__MODULE__, {:reset_app_statistics, name})
@@ -426,7 +450,7 @@ defmodule Sentinel.Watchdog do
   # Every resource is watched through the level its usage falls into. Reporting follows the
   # changes of level, a resource sitting above a threshold repeats neither its log line nor its
   # notification, and a resource that crosses both thresholds at once is reported for the level
-  # it actually reached. Restarting follows the level itself, see restart_on_level/4
+  # it actually reached. Restarting follows the level itself, see restart_on_level/5
   defp check_level(resource, config, current_percentage) do
     level = current_level(current_percentage, config)
     level_changed? = level != config.level
@@ -440,7 +464,7 @@ defmodule Sentinel.Watchdog do
       report_level(level, resource, config, current_percentage)
     end
 
-    restart_on_level(level, level_changed?, resource, config)
+    restart_on_level(level, level_changed?, resource, config, current_percentage)
   end
 
   # A resource that stays critical is restarted on every check, the usage only comes down once the
@@ -451,14 +475,15 @@ defmodule Sentinel.Watchdog do
          :critical,
          _level_changed?,
          %{repeat_restart: true} = resource,
-         %{enable_restart: true}
+         %{enable_restart: true},
+         percent
        ),
-       do: resource.restart.()
+       do: resource.restart.(percent)
 
-  defp restart_on_level(:critical, true, resource, %{enable_restart: true}),
-    do: resource.restart.()
+  defp restart_on_level(:critical, true, resource, %{enable_restart: true}, percent),
+    do: resource.restart.(percent)
 
-  defp restart_on_level(_level, _level_changed?, _resource, _config), do: :ok
+  defp restart_on_level(_level, _level_changed?, _resource, _config, _percent), do: :ok
 
   defp current_level(current_percentage, %{
          warning_threshold_percent: warning_threshold_percent,
@@ -533,25 +558,26 @@ defmodule Sentinel.Watchdog do
     })
   end
 
-  defp restart_application(node) do
+  # The detail names the metric, like "process 91%", for the instance's restart history
+  defp restart_application(node, detail) do
     %{sname: sname} = Catalog.node_info(node)
-    Monitor.restart(sname)
+    Monitor.restart(sname, cause: :watchdog, detail: detail)
 
     :ok
   end
 
   # The host memory is exhausted by the applications DeployEx monitors, so the heaviest one is
   # restarted. There is nothing to restart when DeployEx is not monitoring any application yet
-  defp restart_top_memory_consumer(nil) do
+  defp restart_top_memory_consumer(nil, _detail) do
     Logger.error("There is no monitored application to restart")
 
     :ok
   end
 
-  defp restart_top_memory_consumer(node) do
+  defp restart_top_memory_consumer(node, detail) do
     Logger.error("Restarting #{node}, the application consuming the most memory")
 
-    restart_application(node)
+    restart_application(node, detail)
   end
 
   # DeployEx exhausting its own Beam VM limits can only be cleared by restarting DeployEx itself,

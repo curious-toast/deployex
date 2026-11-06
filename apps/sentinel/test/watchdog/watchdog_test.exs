@@ -117,6 +117,46 @@ defmodule Sentinel.Watchdog.WatchdogTest do
   end
 
   @tag :capture_log
+  test "usage/1 returns the sample and the config of each resource with a sample" do
+    sname = Catalog.create_sname("myelixir")
+    %{node: node} = Catalog.node_info(sname)
+
+    Deployer.MonitorMock
+    |> expect(:list, fn -> [sname] end)
+    |> expect(:subscribe_new_deploy, fn -> :ok end)
+
+    assert Watchdog.usage(node) == %{}
+
+    assert {:ok, pid} = Watchdog.start_link(watchdog_check_interval: 10_000)
+
+    # No sample yet
+    assert Watchdog.usage(node) == %{}
+    assert Watchdog.usage(:deployex) == %{}
+
+    FixtureTelemetry.send_update_app_message(pid, node, %{
+      total_memory: 1_000_000,
+      port_limit: 1_000,
+      port_count: 100,
+      atom_limit: 2_000,
+      atom_count: 200,
+      process_limit: 3_000,
+      process_count: 300
+    })
+
+    FixtureHost.send_update_sys_info_message(pid, Node.self(), 5_000, 100_000)
+    wait_message_processing(pid)
+
+    assert %{
+             port: {%Data{current: 100, limit: 1_000}, %Watchdog{}},
+             atom: {%Data{current: 200, limit: 2_000}, %Watchdog{}},
+             process: {%Data{current: 300, limit: 3_000}, %Watchdog{}}
+           } = Watchdog.usage(node)
+
+    assert %{memory: {%Data{current: 95_000, limit: 100_000}, %Watchdog{}}} =
+             Watchdog.usage(:deployex)
+  end
+
+  @tag :capture_log
   test "handle_info/2 - application statistics - reset config" do
     sname = Catalog.create_sname("myelixir")
     %{node: node, name: name} = Catalog.node_info(sname)
@@ -377,9 +417,11 @@ defmodule Sentinel.Watchdog.WatchdogTest do
     |> expect(:subscribe_new_deploy, fn -> :ok end)
 
     assert {:ok, pid} = Watchdog.start_link(watchdog_check_interval: 10_000)
+    test_pid = self()
 
     Deployer.MonitorMock
-    |> stub(:restart, fn _node ->
+    |> stub(:restart, fn ^sname, [cause: :watchdog, detail: detail] ->
+      send(test_pid, {:restart_detail, detail})
       send(pid, {:nodedown, node})
       :ok
     end)
@@ -413,6 +455,9 @@ defmodule Sentinel.Watchdog.WatchdogTest do
 
     assert message =~
              "[#{node}] process threshold exceeded: current 21% >= restart 20%. Initiating restart..."
+
+    # The restart names the metric, for the instance's restart history
+    assert_received {:restart_detail, "port 21%"}
 
     # Check reset after restart
     Enum.each(monitored_nodes, fn node ->
@@ -572,11 +617,11 @@ defmodule Sentinel.Watchdog.WatchdogTest do
 
     Deployer.MonitorMock
     |> stub(:restart, fn
-      ^sname_1 ->
+      ^sname_1, [cause: :watchdog, detail: "host memory " <> _percent] ->
         send(pid, {:nodedown, node_1})
         :ok
 
-      ^sname_2 ->
+      ^sname_2, [cause: :watchdog, detail: "host memory " <> _percent] ->
         send(pid, {:nodedown, node_2})
         :ok
     end)

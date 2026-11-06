@@ -17,6 +17,8 @@ defmodule Deployer.Monitor.Application do
   @monitor_table "monitor-table"
   @new_deploy_topic "deployex::new_deploy"
   @max_backoff_ms :timer.minutes(5)
+  # The restarts each instance keeps, for the dashboard
+  @restart_history 10
 
   ### ==========================================================================
   ### Callback functions
@@ -79,7 +81,7 @@ defmodule Deployer.Monitor.Application do
     {:reply, :ok, state}
   end
 
-  def handle_call(:restart, _from, state) when is_nil(state.current_pid) do
+  def handle_call({:restart, _restart}, _from, state) when is_nil(state.current_pid) do
     {:reply, {:error, :application_is_not_running}, state}
   end
 
@@ -98,13 +100,14 @@ defmodule Deployer.Monitor.Application do
 
   # A restart waits for a running pre-commands run, as it did behind the old blocking call, so
   # the current version's pre_commands never run next to the new version's
-  def handle_call(:restart, _from, %Monitor{pre_commands_run: %{} = run} = state) do
+  def handle_call({:restart, restart}, _from, %Monitor{pre_commands_run: %{} = run} = state) do
     Logger.warning("Restart requested for sname: #{state.sname}, after the running pre-commands")
 
-    {:reply, :ok, %{state | pre_commands_run: Map.put(run, :restart, true)}}
+    {:reply, :ok, %{state | pre_commands_run: Map.put(run, :restart, restart)}}
   end
 
-  def handle_call(:restart, _from, state), do: {:reply, :ok, do_restart(state)}
+  def handle_call({:restart, restart}, _from, state),
+    do: {:reply, :ok, do_restart(state, restart)}
 
   # Hot upgrade pre_commands run as erlexec processes that report their exit with a DOWN message.
   # A hot upgrade needs a running app, so the worker asks again while it is down or starting
@@ -276,13 +279,18 @@ defmodule Deployer.Monitor.Application do
     backoff = min(2 * consecutive_crash_count * 1000, @max_backoff_ms)
     trigger_run_service(state.sname, backoff)
 
-    {:noreply,
-     update_non_blocking_state(%{
-       state
-       | current_pid: nil,
-         crash_restart_count: crash_restart_count,
-         consecutive_crash_count: consecutive_crash_count
-     })}
+    # Map.put, since a state that missed code_change on a relup has no last_crash_at key
+    state =
+      %{
+        state
+        | current_pid: nil,
+          crash_restart_count: crash_restart_count,
+          consecutive_crash_count: consecutive_crash_count
+      }
+      |> Map.put(:last_crash_at, DateTime.utc_now(:second))
+      |> add_restart({:crash, nil})
+
+    {:noreply, update_non_blocking_state(state)}
   end
 
   def handle_info({:EXIT, pid, reason}, state) do
@@ -307,6 +315,9 @@ defmodule Deployer.Monitor.Application do
      state
      |> Map.put_new(:pre_commands_run, nil)
      |> Map.put_new(:reported_pre_commands, [])
+     |> Map.put_new(:last_crash_at, nil)
+     |> Map.put_new(:watchdog_restart_count, 0)
+     |> Map.put_new(:restarts, [])
      |> Map.put_new_lazy(:started_at, fn -> Common.monotonic_to_utc(state.start_time) end)}
   end
 
@@ -372,10 +383,12 @@ defmodule Deployer.Monitor.Application do
   end
 
   @impl true
-  def restart(sname) do
+  def restart(sname, options \\ []) do
+    restart = {Keyword.get(options, :cause, :operator), Keyword.get(options, :detail)}
+
     sname
     |> String.to_existing_atom()
-    |> Common.call_gen_server(:restart)
+    |> Common.call_gen_server({:restart, restart})
   end
 
   def global_name(sname),
@@ -433,12 +446,11 @@ defmodule Deployer.Monitor.Application do
 
       Process.send_after(self(), {:check_running, pid, sname}, timeout_app_ready)
 
-      # Map.put, since a state that missed code_change on a relup has no started_at key
-      Map.put(
-        %{state | current_pid: pid, status: :starting, start_time: now()},
-        :started_at,
-        DateTime.utc_now(:second)
-      )
+      # Map.put, since a state that missed code_change on a relup has no started_at key. The pre_commands
+      # passed, so a later failure starts a new run of reports
+      %{state | current_pid: pid, status: :starting, start_time: now()}
+      |> Map.put(:started_at, DateTime.utc_now(:second))
+      |> Map.put(:reported_pre_commands, [])
     else
       false ->
         trigger_run_service(sname, retry_delay_pre_commands)
@@ -686,7 +698,7 @@ defmodule Deployer.Monitor.Application do
     # down is dropped, its crash restart has its own run_service
     cond do
       run[:restart] && state.current_pid != nil ->
-        do_restart(state)
+        do_restart(state, run.restart)
 
       run[:run_service] ->
         trigger_run_service(state.sname)
@@ -714,7 +726,7 @@ defmodule Deployer.Monitor.Application do
     })
   end
 
-  defp do_restart(state) do
+  defp do_restart(state, {cause, _detail} = restart) do
     Logger.warning("Restart requested for sname: #{state.sname}")
 
     Foundation.Notifications.notify("deployment_shutdown", %{
@@ -727,20 +739,27 @@ defmodule Deployer.Monitor.Application do
 
     cleanup_beam_process(state.sname)
 
-    # Update the number of force restarts
+    # Update the number of force restarts, and of the ones the watchdog asked for
     force_restart_count = state.force_restart_count + 1
+
+    watchdog_restart_count =
+      Map.get(state, :watchdog_restart_count, 0) + if(cause == :watchdog, do: 1, else: 0)
 
     # Trigger restart with backoff time of 1 second
     trigger_run_service(state.sname, 1_000)
 
     # The app is down until run_service starts it again. Without a current pid, its exit is not
     # taken for a crash, which would start it a second time
-    update_non_blocking_state(%{
-      state
-      | current_pid: nil,
-        force_restart_count: force_restart_count,
-        status: :starting
-    })
+    %{state | current_pid: nil, force_restart_count: force_restart_count, status: :starting}
+    |> Map.put(:watchdog_restart_count, watchdog_restart_count)
+    |> add_restart(restart)
+    |> update_non_blocking_state()
+  end
+
+  # The latest restarts, newest first. Map.update, since a state that missed code_change has no restarts
+  defp add_restart(state, {cause, detail}) do
+    restart = %{at: DateTime.utc_now(:second), cause: cause, detail: detail}
+    Map.update(state, :restarts, [restart], &Enum.take([restart | &1], @restart_history))
   end
 
   defp cleanup_beam_process(sname) do

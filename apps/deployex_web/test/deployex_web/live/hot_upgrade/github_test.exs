@@ -25,7 +25,7 @@ defmodule DeployexWeb.HotUpgrade.GithubTest do
 
       html =
         live
-        |> element("a", "GitHub URL")
+        |> element("#hotupgrade-source-github")
         |> render_click()
 
       assert html =~ "Download from GitHub"
@@ -45,7 +45,7 @@ defmodule DeployexWeb.HotUpgrade.GithubTest do
 
       html =
         live
-        |> element("a", "GitHub URL")
+        |> element("#hotupgrade-source-github")
         |> render_click()
 
       # A text field followed by a password field reads as a sign in form, and the DeployEx
@@ -62,12 +62,12 @@ defmodule DeployexWeb.HotUpgrade.GithubTest do
       {:ok, live, _html} = live(conn, ~p"/hotupgrade")
 
       live
-      |> element("a", "GitHub URL")
+      |> element("#hotupgrade-source-github")
       |> render_click()
 
       html =
         live
-        |> element("a", "Upload File")
+        |> element("#hotupgrade-source-file")
         |> render_click()
 
       assert html =~ "Upload Hot Upgrade Release"
@@ -85,7 +85,7 @@ defmodule DeployexWeb.HotUpgrade.GithubTest do
       {:ok, live, _html} = live(conn, ~p"/hotupgrade")
 
       live
-      |> element("a", "GitHub URL")
+      |> element("#hotupgrade-source-github")
       |> render_click()
 
       url = "https://github.com/user/repo/actions/runs/123/artifacts/456"
@@ -118,7 +118,7 @@ defmodule DeployexWeb.HotUpgrade.GithubTest do
         {:ok, live, _html} = live(conn, ~p"/hotupgrade")
 
         live
-        |> element("a", "GitHub URL")
+        |> element("#hotupgrade-source-github")
         |> render_click()
 
         url = "https://github.com/user/repo/actions/runs/123/artifacts/456"
@@ -159,7 +159,7 @@ defmodule DeployexWeb.HotUpgrade.GithubTest do
         {:ok, live, _html} = live(conn, ~p"/hotupgrade")
 
         live
-        |> element("a", "GitHub URL")
+        |> element("#hotupgrade-source-github")
         |> render_click()
 
         url = "https://github.com/user/repo/actions/runs/123/artifacts/456"
@@ -209,7 +209,7 @@ defmodule DeployexWeb.HotUpgrade.GithubTest do
         {:ok, live, _html} = live(conn, ~p"/hotupgrade")
 
         live
-        |> element("a", "GitHub URL")
+        |> element("#hotupgrade-source-github")
         |> render_click()
 
         url = "https://github.com/user/repo/actions/runs/123/artifacts/456"
@@ -263,7 +263,7 @@ defmodule DeployexWeb.HotUpgrade.GithubTest do
         {:ok, live, _html} = live(conn, ~p"/hotupgrade")
 
         live
-        |> element("a", "GitHub URL")
+        |> element("#hotupgrade-source-github")
         |> render_click()
 
         url = "https://github.com/user/repo/actions/runs/123/artifacts/456"
@@ -325,7 +325,7 @@ defmodule DeployexWeb.HotUpgrade.GithubTest do
             deployex_check: fn _path -> {:error, {:otp_mismatch, %{running_otp: "28"}}} end do
             {:ok, live, _html} = live(conn, ~p"/hotupgrade")
 
-            live |> element("a", "GitHub URL") |> render_click()
+            live |> element("#hotupgrade-source-github") |> render_click()
 
             url = "https://github.com/user/repo/actions/runs/123/artifacts/456"
 
@@ -379,7 +379,7 @@ defmodule DeployexWeb.HotUpgrade.GithubTest do
                  {:ok, live, _html} = live(conn, ~p"/hotupgrade")
 
                  live
-                 |> element("a", "GitHub URL")
+                 |> element("#hotupgrade-source-github")
                  |> render_click()
 
                  url = "https://github.com/user/repo/actions/runs/123/artifacts/456"
@@ -447,7 +447,7 @@ defmodule DeployexWeb.HotUpgrade.GithubTest do
                  {:ok, live, _html} = live(conn, ~p"/hotupgrade")
 
                  live
-                 |> element("a", "GitHub URL")
+                 |> element("#hotupgrade-source-github")
                  |> render_click()
 
                  url = "https://github.com/user/repo/actions/runs/123/artifacts/456"
@@ -504,7 +504,7 @@ defmodule DeployexWeb.HotUpgrade.GithubTest do
         {:ok, live, _html} = live(conn, ~p"/hotupgrade")
 
         live
-        |> element("a", "GitHub URL")
+        |> element("#hotupgrade-source-github")
         |> render_click()
 
         url = "https://github.com/user/repo/actions/runs/123/artifacts/456"
@@ -561,7 +561,7 @@ defmodule DeployexWeb.HotUpgrade.GithubTest do
         {:ok, live, _html} = live(conn, ~p"/hotupgrade")
 
         live
-        |> element("a", "GitHub URL")
+        |> element("#hotupgrade-source-github")
         |> render_click()
 
         url = "https://github.com/user/repo/actions/runs/123/artifacts/456"
@@ -590,7 +590,7 @@ defmodule DeployexWeb.HotUpgrade.GithubTest do
 
       html =
         live
-        |> element("a", "GitHub URL")
+        |> element("#hotupgrade-source-github")
         |> render_click()
 
       refute html =~ "Download Release"
@@ -615,7 +615,7 @@ defmodule DeployexWeb.HotUpgrade.GithubTest do
       {:ok, live, _html} = live(conn, ~p"/hotupgrade")
 
       live
-      |> element("a", "GitHub URL")
+      |> element("#hotupgrade-source-github")
       |> render_click()
 
       html =

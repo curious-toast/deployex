@@ -5,12 +5,13 @@ defmodule DeployexWeb.HotUpgradeLive do
 
   alias Deployer.Github
   alias Deployer.HotUpgrade
-  alias DeployexWeb.Cache.UiSettings
   alias DeployexWeb.Components.Confirm
   alias DeployexWeb.Components.Progress
-  alias DeployexWeb.Components.SystemBar
+  alias DeployexWeb.Guides
   alias DeployexWeb.Helper
   alias DeployexWeb.HotUpgrade.Data
+  alias DeployexWeb.UI.Icons
+  alias DeployexWeb.UI.Tags
   alias Foundation.Common
 
   @impl true
@@ -18,586 +19,329 @@ defmodule DeployexWeb.HotUpgradeLive do
     ~H"""
     <Layouts.app
       flash={@flash}
-      ui_settings={@ui_settings}
       current_path={@current_path}
       current_user={@current_user}
+      host_info={@host_info}
+      recent_events={@recent_events}
+      socket={@socket}
     >
-      <div class="min-h-screen bg-base-300">
-        <SystemBar.content info={@host_info} />
-        <!-- Main Content -->
-        <div class="p-5">
-          <!-- Breadcrumb -->
-          <div class="breadcrumbs text-sm mb-6">
-            <ul>
-              <li><a href="/applications" class="text-base-content/60">Applications</a></li>
-              <li class="text-base-content font-medium">Hot Upgrade</li>
-            </ul>
+      <div class="mx-auto flex max-w-[1180px] flex-col gap-4 px-7 pt-6 pb-12 max-md:px-4">
+        <header class="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
+          <div>
+            <h1 class="text-[1.625rem] font-bold tracking-[-0.02em]">Hot Upgrade</h1>
+            <p class="dx-muted mt-1 text-[0.8125rem]">
+              Upgrade DeployEx itself without downtime
+            </p>
           </div>
-          <!-- Page Header -->
-          <div class="mb-8">
-            <h1 class="text-3xl font-bold text-base-content mb-2">Hot Upgrade Manager</h1>
-            <p class="text-base-content/60">Upload and apply hot upgrades without downtime</p>
-          </div>
-          <!-- Tab Navigation -->
-          <div class="tabs tabs-boxed bg-base-100 shadow-sm mb-6 p-2">
-            <a
-              class={"tab tab-lg " <> if(@upload_method == :file, do: "tab-active", else: "")}
+          <div class="dx-seg2" role="group" aria-label="Release source">
+            <button
+              id="hotupgrade-source-file"
+              type="button"
+              aria-pressed={to_string(@upload_method == :file)}
               phx-click="switch-upload-method"
               phx-value-method="file"
             >
-              <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="2"
-                  d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
-                />
-              </svg>
               Upload File
-            </a>
-            <a
-              class={"tab tab-lg " <> if(@upload_method == :github, do: "tab-active", else: "")}
+            </button>
+            <button
+              id="hotupgrade-source-github"
+              type="button"
+              aria-pressed={to_string(@upload_method == :github)}
               phx-click="switch-upload-method"
               phx-value-method="github"
             >
-              <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z" />
-              </svg>
               GitHub URL
+            </button>
+          </div>
+        </header>
+
+        <div id="hotupgrade-iac" class="dx-callout dx-callout-info m-0">
+          <Icons.icon name="info" class="dx-callout-ico" />
+          <div class="dx-callout-text">
+            <b>This page upgrades DeployEx itself</b>
+            <span>
+              Your apps upgrade from their release bucket, not here. To keep the DeployEx version in code,
+              set it in Terraform, and DeployEx upgrades itself to it.
+            </span>
+            <a
+              class="dx-link"
+              href={Guides.url("hot-upgrades", "method-4-terraform-iac-self-upgrade")}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Terraform self-upgrade guide<Icons.icon
+                name="external"
+                class="dx-ico ml-1 inline size-3.5"
+              /><span class="sr-only"> (opens in a new tab)</span>
             </a>
           </div>
-          <!-- File Upload Section -->
-          <div :if={@upload_method == :file} class="card bg-base-100 shadow-sm mb-6">
-            <div class="card-body">
-              <h2 class="card-title text-xl mb-4">
-                <svg
-                  class="w-6 h-6 text-primary"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
-                  >
-                  </path>
-                </svg>
-                Upload Hot Upgrade Release
-              </h2>
-
-              <form id="upload-form" phx-submit="validate-upload" phx-change="validate-upload">
-                <div
-                  class="border-2 border-dashed border-base-300 rounded-lg p-8 hover:border-primary/50 transition-colors duration-200"
-                  phx-drop-target={@uploads.hotupgrade.ref}
-                >
-                  <.live_file_input upload={@uploads.hotupgrade} class="hidden" />
-
-                  <div class="text-center">
-                    <svg
-                      class="w-16 h-16 mx-auto text-base-content/40 mb-4"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        stroke-width="2"
-                        d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                      >
-                      </path>
-                    </svg>
-
-                    <label for={@uploads.hotupgrade.ref} class="cursor-pointer">
-                      <span class="text-lg font-medium text-base-content">
-                        Drop your .tar.gz file here or
-                        <span class="text-primary hover:text-primary-focus">browse</span>
-                      </span>
-                    </label>
-
-                    <p class="text-sm text-base-content/60 mt-2">
-                      Maximum file size: {trunc(@uploads.hotupgrade.max_file_size / 1_000_000)}MB
-                    </p>
-                  </div>
-                </div>
-                <!-- Upload Progress -->
-                <%= for entry <- @uploads.hotupgrade.entries do %>
-                  <div class="mt-4 p-4 bg-base-200 rounded-lg">
-                    <div class="flex items-center justify-between mb-2">
-                      <div class="flex items-center gap-3">
-                        <svg
-                          class="w-5 h-5 text-info"
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                            stroke-width="2"
-                            d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"
-                          >
-                          </path>
-                        </svg>
-                        <div>
-                          <p class="font-medium text-base-content">{entry.client_name}</p>
-                          <p class="text-sm text-base-content/60">
-                            {Helper.format_bytes(entry.client_size)}
-                          </p>
-                        </div>
-                      </div>
-
-                      <button
-                        type="button"
-                        phx-click="cancel-upload"
-                        phx-value-ref={entry.ref}
-                        class="btn btn-sm btn-circle btn-ghost text-error"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                    <!-- Progress Bar -->
-                    <div class="w-full bg-base-300 rounded-full h-2">
-                      <div
-                        class="bg-primary h-2 rounded-full transition-all duration-300"
-                        style={"width: #{entry.progress}%"}
-                      >
-                      </div>
-                    </div>
-                    <p class="text-xs text-base-content/60 mt-1">{entry.progress}% uploaded</p>
-                    <!-- Validation Errors -->
-                    <%= for err <- upload_errors(@uploads.hotupgrade, entry) do %>
-                      <div class="alert alert-error mt-2">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                            stroke-width="2"
-                            d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                          >
-                          </path>
-                        </svg>
-                        <span>{Helper.error_to_string(err)}</span>
-                      </div>
-                    <% end %>
-                  </div>
-                <% end %>
-                <!-- General Upload Errors -->
-                <%= for err <- upload_errors(@uploads.hotupgrade) do %>
-                  <div class="alert alert-error mt-4">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        stroke-width="2"
-                        d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                      >
-                      </path>
-                    </svg>
-                    <span>{Helper.error_to_string(err)}</span>
-                  </div>
-                <% end %>
-              </form>
-            </div>
-          </div>
-          <!-- GitHub URL Section -->
-          <div :if={@upload_method == :github} class="card bg-base-100 shadow-sm mb-6">
-            <div class="card-body">
-              <h2 class="card-title text-xl mb-4">
-                <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z" />
-                </svg>
-                Download from GitHub
-              </h2>
-
-              <%!-- A text field followed by a password field looks like a sign in form to a
-                    password manager, which then fills the DeployEx credentials into the URL and
-                    token below. The autocomplete hints here and on the inputs keep it away. --%>
-              <.form
-                for={@form}
-                id="github-download-form"
-                phx-change="github-download-form-update"
-                phx-submit="download-from-github"
-                class="space-y-4"
-                autocomplete="off"
-              >
-                <div class="form-control">
-                  <label class="label">
-                    <span class="label-text font-medium">GitHub Artifact URL</span>
-                  </label>
-                  <input
-                    type="text"
-                    name="github_url"
-                    value={@form.params["github_url"]}
-                    placeholder="https://github.com/user/repo/actions/runs/123/artifacts/456"
-                    class="input input-bordered w-full"
-                    autocomplete="off"
-                    data-1p-ignore
-                    data-lpignore="true"
-                    required
-                  />
-                  <label class="label">
-                    <span class="label-text-alt text-base-content/60">
-                      Paste the GitHub Actions artifact URL
-                    </span>
-                  </label>
-                </div>
-
-                <div class="form-control">
-                  <label class="label">
-                    <span class="label-text font-medium">GitHub Token (optional)</span>
-                  </label>
-                  <%!-- new-password rather than off: Chrome ignores off for password fields
-                        but will not fill a stored credential into a new-password one --%>
-                  <input
-                    type="password"
-                    name="github_token"
-                    value={@form.params["github_token"]}
-                    placeholder="ghp_xxxxxxxxxxxx"
-                    class="input input-bordered w-full font-mono text-sm"
-                    autocomplete="new-password"
-                    data-1p-ignore
-                    data-lpignore="true"
-                  />
-                  <label class="label">
-                    <span class="label-text-alt text-base-content/60">
-                      Required for private repositories or artifacts
-                    </span>
-                  </label>
-                </div>
-
-                <div
-                  :if={@github.download_status == :downloading}
-                  class="alert alert-info flex-col items-stretch"
-                >
-                  <div class="flex justify-between items-center w-full">
-                    <span>Downloading from GitHub...</span>
-                  </div>
-                  <div class="flex justify-between items-center w-full">
-                    <progress
-                      class="progress progress-primary w-full"
-                      value={@github.download_progress}
-                      max="100"
-                    ></progress>
-
-                    <div class="flex items-center gap-3 ml-3 w-20">
-                      <span class="text-sm font-semibold">{@github.download_progress}%</span>
-                    </div>
-
-                    <button
-                      type="button"
-                      phx-click="cancel-github-download"
-                      class="btn btn-sm btn-error"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-
-                <div :if={@github.download_error} id="github-download-error" class="alert alert-error">
-                  <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      stroke-width="2"
-                      d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                    />
-                  </svg>
-                  <span>{@github.download_error}</span>
-                </div>
-
-                <div class="flex gap-3 justify-end">
-                  <button
-                    :if={@form.params["github_url"] != ""}
-                    type="submit"
-                    class="btn btn-primary"
-                    disabled={@github.download_status == :downloading}
-                  >
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        stroke-width="2"
-                        d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
-                      />
-                    </svg>
-                    Download Release
-                  </button>
-                </div>
-              </.form>
-              <!-- Info Box -->
-              <div class="bg-info/10 border border-info/20 rounded-lg p-4 mt-4">
-                <div class="flex gap-3">
-                  <svg
-                    class="w-5 h-5 text-info flex-shrink-0 mt-0.5"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      stroke-width="2"
-                      d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                    />
-                  </svg>
-                  <div>
-                    <p class="font-semibold text-info mb-1">How to get the artifact URL</p>
-                    <ol class="text-sm text-base-content/80 space-y-1 list-decimal list-inside">
-                      <li>Go to your GitHub repository's Actions tab</li>
-                      <li>Click on the workflow run</li>
-                      <li>Find the artifact in the "Artifacts" section</li>
-                      <li>Right-click on the artifact name and copy the link</li>
-                    </ol>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-          <!-- Validated Release Section -->
-          <%= if @downloaded_release do %>
-            <div
-              class="card bg-base-100 shadow-sm mb-6"
-              phx-mounted={
-                JS.transition(
-                  {"ease-in duration-300", "opacity-0 scale-95", "opacity-100 scale-100"},
-                  time: 300
-                )
-              }
-            >
-              <div class="card-body">
-                <h2 class="card-title text-xl mb-4">
-                  <svg
-                    class="w-6 h-6 text-success"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      stroke-width="2"
-                      d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-                    >
-                    </path>
-                  </svg>
-                  Uploaded release
-                </h2>
-
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-                  <!-- Release Info -->
-                  <div class="bg-base-200 border border-base-300 rounded-lg p-4">
-                    <div class="flex items-center gap-2 mb-3">
-                      <svg
-                        class="w-5 h-5 text-primary"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          stroke-width="2"
-                          d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                        >
-                        </path>
-                      </svg>
-                      <h3 class="font-semibold text-base-content">Release Information</h3>
-                    </div>
-
-                    <dl class="space-y-2">
-                      <div>
-                        <dt class="text-xs text-base-content/60">Application</dt>
-                        <dd class="font-mono text-sm font-medium text-base-content">
-                          {@downloaded_release.name}
-                        </dd>
-                      </div>
-                      <div :if={!@downloaded_release.error}>
-                        <dt class="text-xs text-base-content/60">Version</dt>
-                        <dd class="font-mono text-sm font-medium text-primary">
-                          {@downloaded_release.to_version}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt class="text-xs text-base-content/60">Filename</dt>
-                        <dd class="font-mono text-xs text-base-content/80 truncate">
-                          {@downloaded_release.filename}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt class="text-xs text-base-content/60">Size</dt>
-                        <dd class="text-sm text-base-content">
-                          {Helper.format_bytes(@downloaded_release.size)}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt class="text-xs text-base-content/60">Sha256</dt>
-                        <dd class="text-sm text-base-content">
-                          {@downloaded_release.sha256}
-                        </dd>
-                      </div>
-                    </dl>
-                  </div>
-                  <!-- Upgrade Details -->
-                  <div class="bg-base-200 border border-base-300 rounded-lg p-4">
-                    <div class="flex items-center gap-2 mb-3">
-                      <svg
-                        class="w-5 h-5 text-info"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          stroke-width="2"
-                          d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-                        >
-                        </path>
-                      </svg>
-                      <h3 class="font-semibold text-base-content">Upgrade Details</h3>
-                    </div>
-
-                    <dl class="space-y-2">
-                      <div>
-                        <dt class="text-xs text-base-content/60">Current Version</dt>
-                        <dd class="font-mono text-sm font-medium text-base-content">
-                          {@downloaded_release.from_version || "N/A"}
-                        </dd>
-                      </div>
-                      <div :if={!@downloaded_release.error}>
-                        <dt class="text-xs text-base-content/60">Target Version</dt>
-                        <dd class="font-mono text-sm font-medium text-success">
-                          {@downloaded_release.to_version}
-                        </dd>
-                      </div>
-                      <div :if={!@downloaded_release.error}>
-                        <dt class="text-xs text-base-content/60">Upgrade Type</dt>
-                        <dd class="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold bg-warning/10 text-warning">
-                          Hot Upgrade
-                        </dd>
-                      </div>
-                      <div :if={@downloaded_release.error}>
-                        <dt class="text-xs text-base-content/60">Error</dt>
-                        <dd class="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold bg-error/10 text-error">
-                          {@downloaded_release.error}
-                        </dd>
-                      </div>
-                    </dl>
-                  </div>
-
-                  <div class="bg-base-200 border border-base-300 rounded-lg p-4">
-                    <div class="flex items-center gap-2 mb-3">
-                      <svg
-                        class="w-5 h-5 text-info"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          stroke-width="2"
-                          d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-                        >
-                        </path>
-                      </svg>
-                      <h3 class="font-semibold text-base-content">Applications info</h3>
-                    </div>
-
-                    <div class="overflow-x-auto">
-                      <table class="table table-xs">
-                        <thead>
-                          <tr>
-                            <th class="text-base-content/60">Name</th>
-                            <th class="text-base-content/60">Type</th>
-                            <th class="text-base-content/60">From</th>
-                            <th class="text-base-content/60">To</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          <%= for app <- @downloaded_release.jellyfish_info || [] do %>
-                            <tr class="hover">
-                              <td class="font-mono text-xs font-medium">{app.name}</td>
-                              <td>
-                                <span class="badge badge-sm badge-outline">{app.type}</span>
-                              </td>
-                              <td class="font-mono text-xs text-base-content/70">{app.from}</td>
-                              <td class="font-mono text-xs text-primary font-medium">{app.to}</td>
-                            </tr>
-                          <% end %>
-                        </tbody>
-                      </table>
-                    </div>
-
-                    <%= if is_nil(@downloaded_release.jellyfish_info) || @downloaded_release.jellyfish_info == [] do %>
-                      <div class="text-center py-4 text-base-content/40 text-sm">
-                        No application info available
-                      </div>
-                    <% end %>
-                  </div>
-                </div>
-                <!-- Warning Banner -->
-                <div
-                  :if={!@downloaded_release.error}
-                  class="bg-warning/10 border border-warning/20 rounded-lg p-4 mb-6"
-                >
-                  <div class="flex gap-3">
-                    <svg
-                      class="w-5 h-5 text-warning flex-shrink-0 mt-0.5"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        stroke-width="2"
-                        d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"
-                      >
-                      </path>
-                    </svg>
-                    <div>
-                      <p class="font-semibold text-warning mb-1">Important Notice</p>
-                      <ul class="text-sm text-base-content/80 space-y-1 list-disc list-inside">
-                        <li>This will perform a hot upgrade without restarting the application</li>
-                        <li>Ensure the release is compatible with the current version</li>
-                        <li>This operation cannot be easily undone</li>
-                        <li>Consider backing up current state before proceeding</li>
-                      </ul>
-                    </div>
-                  </div>
-                </div>
-                <!-- Action Buttons -->
-                <div class="flex gap-3 justify-end">
-                  <button type="button" phx-click="remove-release" class="btn btn-ghost">
-                    Remove
-                  </button>
-                  <.link
-                    :if={!@downloaded_release.error}
-                    id={Helper.normalize_id("hotupgrade-apply-#{@downloaded_release.name}")}
-                    patch={~p"/hotupgrade/apply"}
-                  >
-                    <button type="button" class="btn btn-primary">
-                      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path
-                          stroke-linecap="round"
-                          stroke-linejoin="round"
-                          stroke-width="2"
-                          d="M5 13l4 4L19 7"
-                        >
-                        </path>
-                      </svg>
-                      Apply Hot Upgrade
-                    </button>
-                  </.link>
-                </div>
-              </div>
-            </div>
-          <% end %>
         </div>
+
+        <section :if={@upload_method == :file} class="dx-card p-5" aria-labelledby="hotupgrade-upload">
+          <h2 id="hotupgrade-upload" class="mb-4 flex items-center gap-2 text-base font-semibold">
+            <Icons.icon name="arrow-up-tray" class="dx-ico dx-muted size-5" />
+            Upload Hot Upgrade Release
+          </h2>
+
+          <form id="upload-form" phx-submit="validate-upload" phx-change="validate-upload">
+            <div class="dx-upload" phx-drop-target={@uploads.hotupgrade.ref}>
+              <.live_file_input upload={@uploads.hotupgrade} class="hidden" />
+              <Icons.icon name="document" stroke="1.4" class="dx-ico dx-muted mx-auto mb-3 size-12" />
+              <label for={@uploads.hotupgrade.ref} class="cursor-pointer text-base font-medium">
+                Drop your .tar.gz file here or <span class="dx-upload-browse">browse</span>
+              </label>
+              <p class="dx-muted mt-2 text-[0.8125rem]">
+                Maximum file size: {trunc(@uploads.hotupgrade.max_file_size / 1_000_000)}MB
+              </p>
+            </div>
+
+            <div :for={entry <- @uploads.hotupgrade.entries} class="dx-upload-entry">
+              <div class="mb-2 flex items-center justify-between gap-3">
+                <div class="flex min-w-0 items-center gap-3">
+                  <Icons.icon name="document" class="dx-ico dx-muted size-5" />
+                  <div class="min-w-0">
+                    <p class="truncate font-medium">{entry.client_name}</p>
+                    <p class="dx-muted text-[0.8125rem]">{Helper.format_bytes(entry.client_size)}</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  class="dx-ghost"
+                  aria-label={"Cancel the upload of #{entry.client_name}"}
+                  phx-click="cancel-upload"
+                  phx-value-ref={entry.ref}
+                >
+                  <Icons.icon name="x-mark" class="dx-ico size-4" />
+                </button>
+              </div>
+              <.bar label="Upload progress" percent={entry.progress} />
+              <p class="dx-muted mt-1 text-xs">{entry.progress}% uploaded</p>
+              <.failure :for={err <- upload_errors(@uploads.hotupgrade, entry)}>
+                {Helper.error_to_string(err)}
+              </.failure>
+            </div>
+
+            <.failure :for={err <- upload_errors(@uploads.hotupgrade)}>
+              {Helper.error_to_string(err)}
+            </.failure>
+          </form>
+        </section>
+
+        <section
+          :if={@upload_method == :github}
+          class="dx-card p-5"
+          aria-labelledby="hotupgrade-github"
+        >
+          <h2 id="hotupgrade-github" class="mb-4 flex items-center gap-2 text-base font-semibold">
+            <Icons.icon name="arrow-down-tray" class="dx-ico dx-muted size-5" /> Download from GitHub
+          </h2>
+
+          <%!-- A text field followed by a password field looks like a sign in form to a
+                password manager, which then fills the DeployEx credentials into the URL and
+                token below. The autocomplete hints here and on the inputs keep it away. --%>
+          <.form
+            for={@form}
+            id="github-download-form"
+            phx-change="github-download-form-update"
+            phx-submit="download-from-github"
+            class="flex flex-col gap-4"
+            autocomplete="off"
+          >
+            <div class="dx-field">
+              <label for="hotupgrade-github-url">GitHub Artifact URL</label>
+              <input
+                id="hotupgrade-github-url"
+                type="text"
+                name="github_url"
+                value={@form.params["github_url"]}
+                placeholder="https://github.com/user/repo/actions/runs/123/artifacts/456"
+                class="dx-input"
+                aria-describedby="hotupgrade-github-url-help"
+                autocomplete="off"
+                data-1p-ignore
+                data-lpignore="true"
+                required
+              />
+              <span id="hotupgrade-github-url-help" class="dx-muted text-xs">
+                Paste the GitHub Actions artifact URL
+              </span>
+            </div>
+
+            <div class="dx-field">
+              <label for="hotupgrade-github-token">GitHub Token (optional)</label>
+              <%!-- new-password rather than off: Chrome ignores off for password fields
+                    but will not fill a stored credential into a new-password one --%>
+              <input
+                id="hotupgrade-github-token"
+                type="password"
+                name="github_token"
+                value={@form.params["github_token"]}
+                placeholder="ghp_xxxxxxxxxxxx"
+                class="dx-input dx-mono"
+                aria-describedby="hotupgrade-github-token-help"
+                autocomplete="new-password"
+                data-1p-ignore
+                data-lpignore="true"
+              />
+              <span id="hotupgrade-github-token-help" class="dx-muted text-xs">
+                Required for private repositories or artifacts
+              </span>
+            </div>
+
+            <div
+              :if={@github.download_status == :downloading}
+              class="dx-callout dx-callout-info m-0 flex-col items-stretch"
+            >
+              <span>Downloading from GitHub...</span>
+              <div class="flex items-center gap-3">
+                <.bar label="Download progress" percent={@github.download_progress} />
+                <span class="dx-mono w-12 text-right text-[0.8125rem] font-semibold">
+                  {@github.download_progress}%
+                </span>
+                <button type="button" phx-click="cancel-github-download" class="dx-btn">
+                  Cancel
+                </button>
+              </div>
+            </div>
+
+            <.failure :if={@github.download_error} id="github-download-error">
+              {@github.download_error}
+            </.failure>
+
+            <div class="flex justify-end">
+              <button
+                :if={@form.params["github_url"] != ""}
+                type="submit"
+                class="dx-btn dx-btn-primary"
+                disabled={@github.download_status == :downloading}
+              >
+                <Icons.icon name="arrow-down-tray" class="dx-ico size-4" /> Download Release
+              </button>
+            </div>
+          </.form>
+
+          <div class="dx-callout dx-callout-info m-0 mt-4">
+            <Icons.icon name="info" class="dx-callout-ico" />
+            <div class="dx-callout-text">
+              <b>How to get the artifact URL</b>
+              <ol class="list-inside list-decimal text-[0.8125rem] text-(--dx-base-content)">
+                <li>Go to your GitHub repository's Actions tab</li>
+                <li>Click on the workflow run</li>
+                <li>Find the artifact in the "Artifacts" section</li>
+                <li>Right-click on the artifact name and copy the link</li>
+              </ol>
+            </div>
+          </div>
+        </section>
+
+        <section
+          :if={@downloaded_release}
+          class="dx-card p-5"
+          aria-labelledby="hotupgrade-release"
+          phx-mounted={
+            JS.transition(
+              {"ease-in duration-300", "opacity-0 scale-95", "opacity-100 scale-100"},
+              time: 300
+            )
+          }
+        >
+          <h2 id="hotupgrade-release" class="mb-4 flex items-center gap-2 text-base font-semibold">
+            <Icons.icon
+              name={if @downloaded_release.error, do: "x-circle", else: "check-circle"}
+              class="dx-ico size-5"
+              style={"color: var(#{if @downloaded_release.error, do: "--dx-error-text", else: "--dx-success-text"})"}
+            /> Uploaded release
+          </h2>
+
+          <div class="mb-5 grid grid-cols-1 gap-4 md:grid-cols-3">
+            <div class="dx-upload-box">
+              <h3 class="mb-3 text-[0.875rem] font-semibold">Release Information</h3>
+              <dl class="flex flex-col gap-2">
+                <.detail label="Application" mono>{@downloaded_release.name}</.detail>
+                <.detail :if={!@downloaded_release.error} label="Version" mono>
+                  {@downloaded_release.to_version}
+                </.detail>
+                <.detail label="Filename" mono>{@downloaded_release.filename}</.detail>
+                <.detail label="Size">{Helper.format_bytes(@downloaded_release.size)}</.detail>
+                <.detail label="Sha256" mono>{@downloaded_release.sha256}</.detail>
+              </dl>
+            </div>
+
+            <div class="dx-upload-box">
+              <h3 class="mb-3 text-[0.875rem] font-semibold">Upgrade Details</h3>
+              <dl class="flex flex-col gap-2">
+                <.detail label="Current Version" mono>
+                  {@downloaded_release.from_version || "N/A"}
+                </.detail>
+                <.detail :if={!@downloaded_release.error} label="Target Version" mono>
+                  {@downloaded_release.to_version}
+                </.detail>
+                <.detail :if={!@downloaded_release.error} label="Upgrade Type">
+                  <Tags.deploy_tag type={:hot} />
+                </.detail>
+                <.detail :if={@downloaded_release.error} label="Error">
+                  <span style="color: var(--dx-error-text)">{@downloaded_release.error}</span>
+                </.detail>
+              </dl>
+            </div>
+
+            <div class="dx-upload-box">
+              <h3 class="mb-3 text-[0.875rem] font-semibold">Applications info</h3>
+              <table
+                :if={@downloaded_release.jellyfish_info not in [nil, []]}
+                class="w-full text-left text-xs"
+              >
+                <thead>
+                  <tr class="dx-lbl">
+                    <th class="pb-1 font-semibold">Name</th>
+                    <th class="pb-1 font-semibold">Type</th>
+                    <th class="pb-1 font-semibold">From</th>
+                    <th class="pb-1 font-semibold">To</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :for={app <- @downloaded_release.jellyfish_info}>
+                    <td class="dx-mono py-1 font-medium">{app.name}</td>
+                    <td class="py-1">{app.type}</td>
+                    <td class="dx-mono dx-muted py-1">{app.from}</td>
+                    <td class="dx-mono py-1 font-medium">{app.to}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <p
+                :if={@downloaded_release.jellyfish_info in [nil, []]}
+                class="dx-muted py-4 text-center text-[0.8125rem]"
+              >
+                No application info available
+              </p>
+            </div>
+          </div>
+
+          <div :if={!@downloaded_release.error} class="dx-callout dx-callout-warning m-0 mb-5">
+            <Icons.icon name="warning" class="dx-callout-ico" />
+            <div class="dx-callout-text">
+              <b>Important Notice</b>
+              <ul class="list-inside list-disc text-[0.8125rem] text-(--dx-base-content)">
+                <li>This will perform a hot upgrade without restarting the application</li>
+                <li>Ensure the release is compatible with the current version</li>
+                <li>This operation cannot be easily undone</li>
+                <li>Consider backing up current state before proceeding</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="flex justify-end gap-2">
+            <button type="button" phx-click="remove-release" class="dx-btn">Remove</button>
+            <.link
+              :if={!@downloaded_release.error}
+              id={Helper.normalize_id("hotupgrade-apply-#{@downloaded_release.name}")}
+              class="dx-btn dx-btn-primary"
+              patch={~p"/hotupgrade/apply"}
+            >
+              <Icons.icon name="check" class="dx-ico size-4" /> Apply Hot Upgrade
+            </.link>
+          </div>
+        </section>
       </div>
     </Layouts.app>
 
@@ -606,71 +350,44 @@ defmodule DeployexWeb.HotUpgradeLive do
         <Progress.content id={"hotupgrade-progress-modal-#{@downloaded_release.name}"}>
           <:header>Hot Upgrade Progress</:header>
 
-          <div id="upgrade-progress" class="mt-6 space-y-4">
-            <!-- Progress Header -->
+          <div id="upgrade-progress" class="mt-6 flex flex-col gap-4">
             <div class="flex items-center justify-between px-4">
-              <h3 class="text-base-content font-semibold">Upgrade Progress</h3>
-              <%= if @upgrade_state == :running do %>
-                <span class="text-sm text-base-content/60">
-                  Step {length(@upgrade_progress)} of {@total_upgrade_steps}
-                </span>
-              <% end %>
+              <h3 class="font-semibold">Upgrade Progress</h3>
+              <span :if={@upgrade_state == :running} class="dx-muted text-[0.8125rem]">
+                Step {length(@upgrade_progress)} of {@total_upgrade_steps}
+              </span>
             </div>
-            <!-- Progress Log -->
-            <div class="bg-base-200 rounded-lg p-4">
+            <div class="dx-upload-box">
               <div
                 id="upgrade-progress-log"
                 phx-hook="AutoScroll"
-                class="space-y-2 max-h-48 overflow-y-auto text-sm font-mono"
+                class="dx-mono flex max-h-48 flex-col gap-2 overflow-y-auto text-[0.8125rem]"
               >
-                <%= for line <- @upgrade_progress do %>
-                  <div class="flex items-start gap-2 text-base-content/80">
-                    <span class="text-success mt-0.5 flex-shrink-0">✓</span>
-                    <span class="flex-1">{line}</span>
-                  </div>
-                <% end %>
-
-                <%= if @upgrade_state == :running and length(@upgrade_progress) > 0 do %>
-                  <div class="flex items-center gap-2 text-primary/80">
-                    <span class="loading loading-spinner loading-xs"></span>
-                    <span class="italic">Processing...</span>
-                  </div>
-                <% end %>
-              </div>
-            </div>
-            <!-- Status Message -->
-            <div :if={@upgrade_state not in [:success, :error]} class="px-4 flex items-center gap-2">
-              <span class="loading loading-spinner loading-sm text-primary"></span>
-              <span class="text-sm text-base-content/60">Applying hot upgrade…</span>
-            </div>
-            <!-- Completion Status -->
-            <div :if={@upgrade_state == :success} class="px-4">
-              <div class="alert alert-success">
-                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                <div :for={line <- @upgrade_progress} class="flex items-start gap-2">
+                  <Icons.icon
+                    name="check"
+                    class="dx-ico mt-0.5 size-4 flex-none"
+                    style="color: var(--dx-success-text)"
                   />
-                </svg>
-                <span>Hot upgrade completed successfully!</span>
+                  <span class="flex-1">{line}</span>
+                </div>
+                <div
+                  :if={@upgrade_state == :running and @upgrade_progress != []}
+                  class="dx-muted flex items-center gap-2 italic"
+                >
+                  <span class="loading loading-spinner loading-xs"></span> Processing...
+                </div>
               </div>
             </div>
-
-            <div :if={@upgrade_state == :error} class="px-4">
-              <div class="alert alert-error">
-                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-                  />
-                </svg>
-                <span>Hot upgrade failed!</span>
-              </div>
+            <div :if={@upgrade_state not in [:success, :error]} class="flex items-center gap-2 px-4">
+              <span class="loading loading-spinner loading-sm"></span>
+              <span class="dx-muted text-[0.8125rem]">Applying hot upgrade…</span>
             </div>
+            <div :if={@upgrade_state == :success} class="dx-callout dx-callout-info m-0" role="status">
+              <Icons.icon name="check-circle" class="dx-callout-ico" />
+              <span class="dx-callout-text">Hot upgrade completed successfully!</span>
+            </div>
+            <.failure :if={@upgrade_state == :error}>Hot upgrade failed!</.failure>
           </div>
 
           <:footer :if={@upgrade_state != :running}>
@@ -687,53 +404,24 @@ defmodule DeployexWeb.HotUpgradeLive do
         <Confirm.content id={"hotupgrade-modal-#{@downloaded_release.name}"}>
           <:header>Hot upgrade</:header>
 
-          <div class="space-y-4">
-            <p class="text-base-content/90">
-              You are about to perform a <span class="font-bold text-error">hot upgrade</span> for:
+          <div class="flex flex-col gap-4">
+            <p>
+              You are about to perform a <b style="color: var(--dx-hot-text)">hot upgrade</b>
+              for <span class="dx-mono font-semibold">{@downloaded_release.name}</span>.
             </p>
-            <div class="bg-base-200 border border-base-300 rounded-lg p-4">
-              <div class="flex items-center gap-3">
-                <div class="w-10 h-10 bg-primary/10 border border-primary/20 rounded-lg flex items-center justify-center">
-                  <span class="text-base font-mono font-bold text-primary">
-                    {String.first(@downloaded_release.name)}
-                  </span>
-                </div>
-                <div>
-                  <p class="text-sm text-base-content/60">
-                    {@downloaded_release.name}
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            <div class="bg-warning/10 border border-warning/20 rounded-lg p-4">
-              <div class="flex gap-3">
-                <svg
-                  class="w-5 h-5 text-warning flex-shrink-0 mt-0.5"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"
-                  >
-                  </path>
-                </svg>
-                <div class="space-y-2">
-                  <p class="font-semibold text-warning">Before you apply</p>
-                  <ul class="text-sm text-base-content/80 space-y-1 list-disc list-inside">
-                    <li>DeployEx keeps running, its code is replaced in place</li>
-                    <li>Processes with a code_change callback have their state migrated live</li>
-                    <li>Monitored applications are not affected, they run on separate nodes</li>
-                    <li>
-                      A failure does not roll back on its own. DeployEx stays up and logs the
-                      error, and restarting the service returns it to the last permanent version
-                    </li>
-                  </ul>
-                </div>
+            <div class="dx-callout dx-callout-warning m-0">
+              <Icons.icon name="warning" class="dx-callout-ico" />
+              <div class="dx-callout-text">
+                <b>Before you apply</b>
+                <ul class="list-inside list-disc text-[0.8125rem] text-(--dx-base-content)">
+                  <li>DeployEx keeps running, its code is replaced in place</li>
+                  <li>Processes with a code_change callback have their state migrated live</li>
+                  <li>Monitored applications are not affected, they run on separate nodes</li>
+                  <li>
+                    A failure does not roll back on its own. DeployEx stays up and logs the
+                    error, and restarting the service returns it to the last permanent version
+                  </li>
+                </ul>
               </div>
             </div>
           </div>
@@ -756,11 +444,51 @@ defmodule DeployexWeb.HotUpgradeLive do
     """
   end
 
+  attr :label, :string, required: true
+  attr :percent, :integer, required: true
+
+  defp bar(assigns) do
+    ~H"""
+    <span
+      class="dx-lbar"
+      role="progressbar"
+      aria-label={@label}
+      aria-valuemin="0"
+      aria-valuemax="100"
+      aria-valuenow={@percent}
+    >
+      <i style={"width: #{@percent}%; background: var(--dx-nav-active)"}></i>
+    </span>
+    """
+  end
+
+  attr :id, :string, default: nil
+  slot :inner_block, required: true
+
+  defp failure(assigns) do
+    ~H"""
+    <div id={@id} class="dx-callout dx-callout-error m-0 mt-3" role="alert">
+      <Icons.icon name="x-circle" class="dx-callout-ico" />
+      <span class="dx-callout-text">{render_slot(@inner_block)}</span>
+    </div>
+    """
+  end
+
+  attr :label, :string, required: true
+  attr :mono, :boolean, default: false
+  slot :inner_block, required: true
+
+  defp detail(assigns) do
+    ~H"""
+    <div class="min-w-0">
+      <dt class="dx-lbl">{@label}</dt>
+      <dd class={["text-[0.8125rem] break-all", @mono && "dx-mono"]}>{render_slot(@inner_block)}</dd>
+    </div>
+    """
+  end
+
   @impl true
   def mount(_params, _session, socket) when is_connected?(socket) do
-    # Subscribe to system info if needed
-    Host.Info.subscribe()
-
     # Subscribe to receive hot upgrade events
     HotUpgrade.subscribe_events()
 
@@ -777,14 +505,12 @@ defmodule DeployexWeb.HotUpgradeLive do
 
   defp default_assigns(socket) do
     socket
-    |> assign(:host_info, nil)
     |> assign(:downloaded_release, nil)
     |> assign(:applying_upgrade, false)
     |> assign(:upgrade_progress, [])
     |> assign(:upgrade_state, :init)
     |> assign(:total_upgrade_steps, 8)
     |> assign(:current_path, "/hotupgrade")
-    |> assign(:ui_settings, UiSettings.get())
     |> assign(:node, Node.self())
     |> assign(:upload_method, :file)
     |> assign(:github, github_new())
@@ -925,15 +651,6 @@ defmodule DeployexWeb.HotUpgradeLive do
   end
 
   @impl true
-  def handle_info({:update_system_info, host_info}, socket) do
-    ui_settings = UiSettings.get()
-
-    {:noreply,
-     socket
-     |> assign(:host_info, host_info)
-     |> assign(:ui_settings, ui_settings)}
-  end
-
   def handle_info(
         {:hot_upgrade_progress, source_node, _sname, msg},
         %{assigns: %{node: node, applying_upgrade: true}} = socket

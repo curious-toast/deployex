@@ -19,8 +19,16 @@ defmodule DeployexWeb.HotUpgrade.UploadTest do
 
       {:ok, _live, html} = live(conn, ~p"/hotupgrade")
 
-      assert html =~ "Hot Upgrade Manager"
-      assert html =~ "Upload and apply hot upgrades without downtime"
+      assert html =~ ~s(<h1 class="text-[1.625rem] font-bold tracking-[-0.02em]">Hot Upgrade</h1>)
+      assert html =~ "Upgrade DeployEx itself without downtime"
+
+      # The page is for DeployEx, and points to the upgrade as code
+      assert html =~ "This page upgrades DeployEx itself"
+      version = Application.spec(:deployex_web, :vsn)
+
+      assert html =~
+               "https://github.com/deployex/deployex/blob/#{version}/guides/docs/hot-upgrades/README.md#method-4-terraform-iac-self-upgrade"
+
       assert html =~ "Upload Hot Upgrade Release"
       assert html =~ "Drop your .tar.gz file here or"
     end
@@ -566,6 +574,7 @@ defmodule DeployexWeb.HotUpgrade.UploadTest do
       assert_receive {:liveview_pid, liveview_pid}, 1_000
 
       host_info = %Host.Info{
+        source_node: Node.self(),
         host: "Linux",
         description: "Ubuntu 22.04",
         memory_free: 8_000_000_000,
@@ -578,8 +587,9 @@ defmodule DeployexWeb.HotUpgrade.UploadTest do
 
       html = render(live)
 
-      assert html =~ "Linux"
-      assert html =~ "Ubuntu 22.04"
+      # The top bar shows the host, and the page has no system bar of its own
+      assert html =~ "8 cores"
+      refute html =~ "Ubuntu 22.04"
     end
   end
 
