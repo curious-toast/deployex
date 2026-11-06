@@ -298,11 +298,15 @@ defmodule Deployer.Engine.Worker do
         Monitor.stop_service(name, sname)
         Catalog.cleanup(sname)
 
-        # A fallback that fails is not ghosted, so this host keeps a version to go back to
+        # A fallback that fails is not ghosted, so this host keeps a version to go back to. The
+        # failed try is reported as a deployment that did not complete
         new_list =
-          if fall_back?,
-            do: state.ghosted_version_list,
-            else: ghost_version(name, sname, version_map)
+          if fall_back? do
+            notify_fall_back_failed(sname, version_map.version)
+            state.ghosted_version_list
+          else
+            ghost_version(name, sname, version_map)
+          end
 
         # Return deployment to the current one. When the rollback timer was
         # armed by the initial boot there is no previous deployment to return
@@ -1431,6 +1435,17 @@ defmodule Deployer.Engine.Worker do
     )
 
     ghosted_version_list
+  end
+
+  defp notify_fall_back_failed(sname, version) do
+    Foundation.Notifications.notify("deployment_complete", %{
+      node: node(),
+      sname: sname,
+      status: :error,
+      message:
+        "Rollback to #{version} did not run within deploy_rollback_timeout_ms, it is tried again",
+      version: to_string(version)
+    })
   end
 
   # The fallback leaves a version that this host ghosted, current.json still names it

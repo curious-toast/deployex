@@ -529,6 +529,7 @@ Other hosts, and new hosts that a scale-out adds, still deploy it while `current
 On the host that ghosted it, an instance that already runs the ghosted version goes back to the newest version that another instance runs.
 DeployEx sends `deployment_rollback` when that deployment starts.
 That deployment is not ghosted when it fails its own rollback window, also after a DeployEx restart, so the instance tries it again.
+Each failed try sends `deployment_complete` with status `:error`.
 After a ghost, point `current.json` to a good version.
 The `version_ghosted` notification tells the pipeline that writes `current.json` when to do it.
 The `pre_command_failed` notification reports a failing pre-command before that.

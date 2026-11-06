@@ -5692,6 +5692,7 @@ defmodule Deployer.EngineTest do
         cmd: fn "tar", ["-x", "-f", _source_path, "-C", _dest_path] -> {"", 0} end do
         {worker_pid, versions} = start_replicas_on_one_version(name, 1_000)
         subscribe_to_deployment_rollback()
+        subscribe_to_deployment_complete()
 
         set_version.("2.0.0")
         assert_receive {:started, first_sname}, @step_timeout
@@ -5699,8 +5700,12 @@ defmodule Deployer.EngineTest do
         assert_receive {:started, _second_sname}, @step_timeout
 
         # The fallback of instance 1 never reports running, so its window fails as well
-        assert_receive {:started, _failed_sname}, @step_timeout
+        assert_receive {:started, failed_sname}, @step_timeout
         assert_receive {"deployment_rollback", %{sname: ^first_sname}}, @step_timeout
+
+        assert_receive {"deployment_complete",
+                        %{sname: ^failed_sname, status: :error, version: "1.0.0"}},
+                       @step_timeout
 
         # 1.0.0 stays usable, and instance 1 tries it again from the 2.0.0 node it still runs
         assert_receive {:started, retry_sname}, @step_timeout
