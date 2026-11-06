@@ -133,6 +133,9 @@ defmodule DeployexWeb.RecentEvents do
       {:info, "#{short(p[:node])} #{p[:type]} back to #{p[:current_percentage]}% of the limit",
        "under the warning at #{p[:warning_threshold_percent]}%"}
 
+  defp describe("deployment_rollback", p),
+    do: {:warning, "#{p[:sname]} rolling back", "#{p[:from_version]} -> #{p[:to_version]}"}
+
   defp describe("deployment_complete", %{status: :error, from_version: _} = p),
     do: {:error, "#{p[:sname]} hot upgrade failed", to_string(p[:message])}
 

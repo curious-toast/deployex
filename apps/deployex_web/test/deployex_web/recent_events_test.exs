@@ -114,6 +114,19 @@ defmodule DeployexWeb.RecentEventsTest do
                )
     end
 
+    test "describes a rollback off a ghosted version as a warning" do
+      assert [%{tone: :warning, title: "myapp-abc rolling back", detail: "1.1.0 -> 1.0.0"}] =
+               RecentEvents.item(
+                 recent("deployment_rollback", %{
+                   sname: "myapp-abc",
+                   name: "myapp",
+                   from_version: "1.1.0",
+                   to_version: "1.0.0",
+                   reason: "1.1.0 is ghosted on this host"
+                 })
+               )
+    end
+
     test "shows successful deploys, hot upgrades and a warning back under its threshold" do
       assert [%{tone: :info, title: "myapp-abc hot upgraded", detail: "0.4.0 -> 0.4.1"}] =
                RecentEvents.item(

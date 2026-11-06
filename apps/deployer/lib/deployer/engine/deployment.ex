@@ -9,13 +9,21 @@ defmodule Deployer.Engine.Deployment do
 
   `:stopped` marks an instance that a DeployEx restart in a rollback window kept on an older
   version without starting it.
+
+  `version` is the version the worker put into service on `sname`, so the worker reads it
+  without a catalog read.
+
+  `fall_back?` marks a window that a fallback opened, so a failure does not ghost the fallback
+  version.
   """
   @type t :: %__MODULE__{
           state: :init | :active | :stopped,
           timer_ref: reference() | nil,
           sname: String.t() | nil,
+          version: String.t() | nil,
           ports: list(),
-          deploying?: boolean()
+          deploying?: boolean(),
+          fall_back?: boolean()
         }
 
   @derive Jason.Encoder
@@ -23,6 +31,8 @@ defmodule Deployer.Engine.Deployment do
   defstruct state: :init,
             timer_ref: nil,
             sname: nil,
+            version: nil,
             ports: [],
-            deploying?: false
+            deploying?: false,
+            fall_back?: false
 end

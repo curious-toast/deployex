@@ -812,6 +812,7 @@ defmodule Foundation.Yaml do
     config_change_applied
     pre_command_failed
     version_ghosted
+    deployment_rollback
   )
 
   defp parse_notification_events(events) do

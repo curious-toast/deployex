@@ -28,6 +28,7 @@ defmodule Foundation.Notifications.Slack do
             - "config_change_applied"
             - "pre_command_failed"
             - "version_ghosted"
+            - "deployment_rollback"
           options:
             username: "DeployEx"        # optional, default: "DeployEx"
             icon_emoji: ":rocket:"      # optional, default: ":robot_face:"
@@ -67,6 +68,7 @@ defmodule Foundation.Notifications.Slack do
   | `config_change_applied`         | ✅    | Pending config changes successfully applied           |
   | `pre_command_failed`            | ⛔    | A pre-command failed, each command reported once      |
   | `version_ghosted`               | 👻    | A version was ghosted, it is not deployed again here  |
+  | `deployment_rollback`           | ↩️    | An instance starts to go back from a ghosted version  |
   """
 
   @behaviour Foundation.Notifications.Adapter
@@ -232,6 +234,13 @@ defmodule Foundation.Notifications.Slack do
     """
     👻 *version_ghosted* — `#{payload.name}` *#{payload.version}* on `#{payload.node}`
     Reason: #{payload.reason}\
+    """
+  end
+
+  defp format_message("deployment_rollback", payload) do
+    """
+    ↩️ *deployment_rollback* — `#{payload.sname}` on `#{payload.node}`
+    From *#{payload.from_version}* to *#{payload.to_version}*, reason: #{payload.reason}\
     """
   end
 

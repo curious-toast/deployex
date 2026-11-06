@@ -22,6 +22,7 @@ defmodule Deployer.Engine.Worker do
   alias Deployer.Release
   alias Deployer.Status
   alias Foundation.Catalog
+  alias Foundation.Common
 
   @type t :: %__MODULE__{
           replicas: non_neg_integer(),
@@ -90,13 +91,14 @@ defmodule Deployer.Engine.Worker do
 
     check_installled_apps = fn
       [] ->
-        {[], nil, []}
+        {[], nil, [], %{}}
 
       installed_snames ->
         # A rolled back full deployment stays at the top of the history with its sname removed,
         # while the previous version keeps running
         ghosted_versions = Enum.map(ghosted_version_list, & &1.version)
         history = Status.history_version_list(name, [])
+        versions = Map.new(installed_snames, &{&1, Status.current_version(&1)})
 
         current_version =
           history
@@ -109,7 +111,7 @@ defmodule Deployer.Engine.Worker do
         # Split the installed snames by the current version
         {snames, other_snames} =
           Enum.split_with(installed_snames, fn sname ->
-            with true <- current_version == Status.current_version(sname),
+            with true <- current_version == versions[sname],
                  bin_path when bin_path != nil <- Catalog.bin_path(sname, :current) do
               true
             else
@@ -139,17 +141,21 @@ defmodule Deployer.Engine.Worker do
           # A monitor that outlived an engine worker restart still runs its sname
           stopped = Enum.reject(pending, &monitor_ports/1)
 
-          {[newest.sname | pending ++ empty ++ upgraded], fallback, stopped}
+          {[newest.sname | pending ++ empty ++ upgraded], fallback, stopped, versions}
         else
           Enum.each(other_snames, &Catalog.cleanup/1)
-          {snames, nil, []}
+          {snames, nil, [], versions}
         end
     end
 
-    {snames, fallback, stopped} = check_installled_apps.(Status.list_installed_apps(name))
+    {snames, fallback, stopped, versions} =
+      check_installled_apps.(Status.list_installed_apps(name))
 
     {deployments, deployment_to_terminate, available_ports} =
-      build_deployments(replica_ports, replicas, snames, fallback, stopped)
+      build_deployments(replica_ports, replicas, {snames, versions}, fallback, stopped)
+
+    deployments =
+      mark_reopened_fall_back(deployments, {snames, versions}, fallback, ghosted_version_list)
 
     {:ok,
      %{
@@ -163,8 +169,8 @@ defmodule Deployer.Engine.Worker do
 
   @impl true
   def handle_info(:schedule, %__MODULE__{} = state) do
-    # A worker that a relup could not suspend kept a state without this field
-    state = Map.put_new(state, :pending_pre_commands, nil)
+    # A worker that a relup could not suspend kept a state that an older version built
+    state = upgrade_state(state)
     schedule_new_deployment(state.deploy_schedule_interval_ms)
     current_deployment = state.deployments[state.current]
 
@@ -276,24 +282,31 @@ defmodule Deployer.Engine.Worker do
       if instance == state.current and sname == current_deployment.sname do
         sname = current_deployment.sname
         ports = current_deployment.ports
+        version_map = Status.current_version_map(sname)
+        fall_back? = Map.get(current_deployment, :fall_back?, false)
 
-        Logger.warning(
-          "The instance: #{instance} sname: #{sname} ports: #{inspect(ports)} is not stable, ghosting version"
-        )
+        if fall_back? do
+          Logger.warning(
+            "The instance: #{instance} sname: #{sname} ports: #{inspect(ports)} is not stable, keeping fallback version #{version_map.version} for the next try"
+          )
+        else
+          Logger.warning(
+            "The instance: #{instance} sname: #{sname} ports: #{inspect(ports)} is not stable, ghosting version"
+          )
+        end
 
         Monitor.stop_service(name, sname)
         Catalog.cleanup(sname)
 
-        # Add current version to the ghosted version list
-        version_map = Status.current_version_map(sname)
-        {:ok, new_list} = Status.add_ghosted_version(version_map)
-
-        notify_version_ghosted(
-          name,
-          sname,
-          version_map.version,
-          "not running within deploy_rollback_timeout_ms"
-        )
+        # A fallback that fails is not ghosted, so this host keeps a version to go back to. The
+        # failed try is reported as a deployment that did not complete
+        new_list =
+          if fall_back? do
+            notify_fall_back_failed(sname, version_map.version)
+            state.ghosted_version_list
+          else
+            ghost_version(name, sname, version_map)
+          end
 
         # Return deployment to the current one. When the rollback timer was
         # armed by the initial boot there is no previous deployment to return
@@ -428,46 +441,10 @@ defmodule Deployer.Engine.Worker do
 
     state =
       if sname == current_deployment.sname do
-        # NOTE: The rollback timer may not be armed, e.g. when the monitor
-        #       reports running right after an engine worker restart
-        if current_deployment.timer_ref, do: Process.cancel_timer(current_deployment.timer_ref)
-
         # deploying? is set where a version is put into service, by a full deployment and by
-        # the start up path, so it is what says this report completes one. Everything else
-        # that reports running, a crash restart, a restart asked for from the UI, or a hot
-        # upgrade that has already reported itself with the versions it moved between,
-        # finds it false and is not announced as a deployment
-        if current_deployment.deploying?, do: notify_deployment_complete(sname)
-
-        # Whatever put the application there, it is running and the system has qualified it
-        # as ready, which is the report itself. A crash restart and a restart asked for
-        # from the UI reach here too, and this is the event that says so
-        notify_application_ready(sname)
-
-        # An app that comes back while its hot upgrade waits for it keeps the instance current,
-        # so the upgrade goes on there
-        new_instance =
-          cond do
-            match?(%{sname: ^sname}, Map.get(state, :pending_pre_commands)) -> state.current
-            state.current == state.replicas -> 1
-            true -> state.current + 1
-          end
-
-        state = terminate_previous_deployment(state)
-
-        Logger.info(" # Moving to the next instance: #{new_instance}")
-
-        # This report closed the window: the timer was cancelled above and the flag goes
-        # with it, so a later report for the same deployment, e.g. after a crash restart,
-        # is not taken for another one
-        deployments =
-          Map.put(state.deployments, state.current, %{
-            current_deployment
-            | timer_ref: nil,
-              deploying?: false
-          })
-
-        %{state | current: new_instance, deployments: deployments}
+        # the start up path, so it is what says this report completes one. A crash restart and
+        # a restart asked for from the UI find it false and are not announced as a deployment
+        application_running(state, sname, complete?: current_deployment.deploying?)
       else
         Logger.warning(
           "Received sname: #{sname} that doesn't match the expected one: #{state.current} sname: #{current_deployment.sname}"
@@ -479,10 +456,9 @@ defmodule Deployer.Engine.Worker do
     {:noreply, state}
   end
 
-  # A state from a version without pending_pre_commands gets the field on a relup
+  # A state from an older version gets the fields it lacks on a relup
   @impl true
-  def code_change(_old_vsn, state, _extra),
-    do: {:ok, Map.put_new(state, :pending_pre_commands, nil)}
+  def code_change(_old_vsn, state, _extra), do: {:ok, upgrade_state(state)}
 
   ### ==========================================================================
   ### Public API
@@ -552,6 +528,25 @@ defmodule Deployer.Engine.Worker do
 
   defp schedule_new_deployment(timeout), do: Process.send_after(self(), :schedule, timeout)
 
+  # An older version built the state without pending_pre_commands, or deployments without a field
+  defp upgrade_state(state) do
+    state
+    |> Map.put_new(:pending_pre_commands, nil)
+    |> Map.update!(
+      :deployments,
+      &Map.new(&1, fn {i, deployment} -> {i, upgrade_deployment(deployment)} end)
+    )
+    |> Map.update!(:deployment_to_terminate, &upgrade_deployment/1)
+  end
+
+  defp upgrade_deployment(nil), do: nil
+
+  defp upgrade_deployment(%{sname: sname} = deployment) do
+    deployment
+    |> Map.put_new_lazy(:version, fn -> sname && Status.current_version(sname) end)
+    |> Map.put_new(:fall_back?, false)
+  end
+
   defp build_ports_by_index(replica_ports, index) do
     Enum.map(replica_ports, fn port -> %{port | base: port.base + index} end)
   end
@@ -574,7 +569,7 @@ defmodule Deployer.Engine.Worker do
 
   # A monitor that outlived an engine worker restart keeps the ports it runs the app on, which
   # full deployments rotate. The other instances and the spare set take the sets nobody holds
-  defp build_deployments(replica_ports, replicas, snames, fallback, stopped) do
+  defp build_deployments(replica_ports, replicas, {snames, versions}, fallback, stopped) do
     held_ports = Enum.map(snames, &monitor_ports/1)
     fallback_ports = monitor_ports(fallback)
     held = [fallback_ports | held_ports] |> Enum.reject(&is_nil/1) |> MapSet.new(&sort_ports/1)
@@ -596,6 +591,7 @@ defmodule Deployer.Engine.Worker do
 
         deployment = %Engine.Deployment{
           sname: sname,
+          version: versions[sname],
           ports: ports,
           state: deployment_state(sname, instance, fallback, stopped)
         }
@@ -611,22 +607,40 @@ defmodule Deployer.Engine.Worker do
 
         {sname, nil} ->
           {ports, free_ports} = take_ports(free_ports)
-          {%Engine.Deployment{sname: sname, ports: ports, state: :active}, free_ports}
+          {fallback_deployment(sname, versions[sname], ports), free_ports}
 
         {sname, ports} ->
-          {%Engine.Deployment{sname: sname, ports: ports, state: :active}, free_ports}
+          {fallback_deployment(sname, versions[sname], ports), free_ports}
       end
 
     {available_ports, _free_ports} = take_ports(free_ports)
     {deployments, deployment_to_terminate, available_ports}
   end
 
-  # With a fallback, the other instances are past their start up, as in an uninterrupted window.
-  # Those on an older version with no monitor stay stopped, so no report moves the rollout on
+  defp fallback_deployment(sname, version, ports),
+    do: %Engine.Deployment{sname: sname, version: version, ports: ports, state: :active}
+
+  # A restart in the window of a fallback reopens it as one: the version kept to return to is
+  # ghosted, and another instance runs the version of the window
+  defp mark_reopened_fall_back(deployments, {[window | others], versions}, fallback, ghosted_list)
+       when fallback != nil do
+    ghosted = Enum.map(ghosted_list, & &1.version)
+    others_run_window? = Enum.any?(others, &(&1 != nil and versions[&1] == versions[window]))
+
+    if versions[fallback] in ghosted and others_run_window?,
+      do: put_in(deployments[1].fall_back?, true),
+      else: deployments
+  end
+
+  defp mark_reopened_fall_back(deployments, _snames, _fallback, _ghosted_list), do: deployments
+
+  # With a fallback, the other instances on a sname are past their start up, as in an
+  # uninterrupted window, and an empty one waits for the rollout. Those on an older version with
+  # no monitor stay stopped, so no report moves the rollout on
   defp deployment_state(sname, instance, fallback, stopped) do
     cond do
       sname in stopped -> :stopped
-      fallback && instance > 1 -> :active
+      fallback && instance > 1 && sname != nil -> :active
       true -> :init
     end
   end
@@ -746,7 +760,7 @@ defmodule Deployer.Engine.Worker do
         state = terminate_previous_deployment(state)
         %{state | current: if(current == state.replicas, do: 1, else: current + 1)}
       else
-        set_timeout_to_rollback(state, sname, ports)
+        set_timeout_to_rollback(state, sname, current_version, ports)
       end
     else
       state
@@ -816,6 +830,48 @@ defmodule Deployer.Engine.Worker do
   defp waiting?(%Engine.Deployment{state: :init, sname: nil}), do: true
   defp waiting?(_deployment), do: false
 
+  # The current instance runs: the window closes and the rollout moves to the next instance.
+  # complete? says that the report completes a deployment, which is then announced
+  defp application_running(state, sname, complete?: complete?) do
+    current_deployment = state.deployments[state.current]
+
+    # NOTE: The rollback timer may not be armed, e.g. when the monitor
+    #       reports running right after an engine worker restart
+    if current_deployment.timer_ref, do: Process.cancel_timer(current_deployment.timer_ref)
+
+    if complete?, do: notify_deployment_complete(sname)
+
+    # Whatever put the application there, it is running and the system has qualified it
+    # as ready, which is the report itself. A crash restart and a restart asked for
+    # from the UI reach here too, and this is the event that says so
+    notify_application_ready(sname)
+
+    # An app that comes back while its hot upgrade waits for it keeps the instance current,
+    # so the upgrade goes on there
+    new_instance =
+      cond do
+        match?(%{sname: ^sname}, Map.get(state, :pending_pre_commands)) -> state.current
+        state.current == state.replicas -> 1
+        true -> state.current + 1
+      end
+
+    state = terminate_previous_deployment(state)
+
+    Logger.info(" # Moving to the next instance: #{new_instance}")
+
+    # This report closed the window: the timer was cancelled above and the flag goes
+    # with it, so a later report for the same deployment, e.g. after a crash restart,
+    # is not taken for another one
+    deployments =
+      Map.put(
+        state.deployments,
+        state.current,
+        Map.merge(current_deployment, %{timer_ref: nil, deploying?: false, fall_back?: false})
+      )
+
+    %{state | current: new_instance, deployments: deployments}
+  end
+
   # The new version runs, so the window is over and the deployment kept to return to stops
   defp terminate_previous_deployment(%{deployment_to_terminate: nil} = state), do: state
 
@@ -828,19 +884,19 @@ defmodule Deployer.Engine.Worker do
   end
 
   # credo:disable-for-lines:1
-  defp check_deployment(
-         %{current: current, ghosted_version_list: ghosted_version_list, name: name} = state
-       ) do
+  defp check_deployment(%{current: current, name: name} = state) do
     current_sname = state.deployments[current].sname
     current_version = current_sname && Status.current_version(current_sname)
 
-    %{version: release_version} = release = Release.get_current_version_map(name)
+    # The catalog has the version of the current instance, the others keep the one put into service
+    state = put_in(state.deployments[current].version, current_version)
 
-    ghosted_version? = Enum.any?(ghosted_version_list, &(&1.version == release_version))
+    release = Release.get_current_version_map(name)
+    target = target(state, release)
     stopped? = state.deployments[current].state == :stopped
-    waiting = Enum.find(1..state.replicas, &waiting?(state.deployments[&1]))
+    fall_back? = match?({:fall_back, _release, _ghosted}, target)
 
-    deploy_application = fn ->
+    deploy_application = fn %{version: release_version} = release ->
       new_sname = new_sname(name)
 
       release_info = %Deployer.Release{
@@ -857,8 +913,9 @@ defmodule Deployer.Engine.Worker do
         {:ok, :full_deployment} ->
           full_deployment(state, new_sname, release)
 
-        # A sname that a restart kept stopped has no node to upgrade
-        {:ok, :hot_upgrade} when stopped? ->
+        # A sname that a restart kept stopped has no node to upgrade. A fallback deploys fully, so
+        # its failure goes through its window and does not ghost it
+        {:ok, :hot_upgrade} when stopped? or fall_back? ->
           full_deployment(state, new_sname, release)
 
         {:ok, :hot_upgrade} ->
@@ -870,34 +927,113 @@ defmodule Deployer.Engine.Worker do
     end
 
     cond do
-      is_nil(current_version) and is_nil(release_version) ->
+      is_nil(current_version) and is_nil(release.version) ->
         Logger.warning("No versions set yet for #{name}")
         state
 
-      release_version != nil and release_version != current_version and not ghosted_version? ->
+      leaves?(target, current_version) ->
+        %{version: release_version} = release = target_release(target)
         version = current_version || "<no current set>"
 
         Logger.info(
           "Update is needed at sname: #{current_sname} from: #{version} to: #{release_version}"
         )
 
-        deploy_application.()
+        new_state = deploy_application.(release)
+
+        # The engine worker rolls the instance back on its own, so it reports it once the deployment
+        # starts and marks its window. A failed download leaves the state as it was
+        if fall_back? and new_state != state do
+          notify_deployment_rollback(name, current_sname, current_version, release_version)
+          put_in(new_state.deployments[current].fall_back?, true)
+        else
+          new_state
+        end
 
       # Up to date, a sname that a restart kept stopped starts as at start up
       stopped? ->
         put_in(state.deployments[current].state, :init)
 
-      # An idle rollout moves to a sname that a restart kept stopped, or to an instance that
-      # replicas added. An armed rollback timer means a running report is still due, even after a
-      # hot upgrade
-      waiting != nil and is_nil(state.deployments[current].timer_ref) ->
-        Logger.info(" # Moving to the waiting instance: #{waiting}")
-        %{state | current: waiting}
+      # An idle rollout moves on. An armed rollback timer means a running report is still due
+      is_nil(state.deployments[current].timer_ref) ->
+        move_to_next_instance(state, target)
 
       true ->
         state
     end
   end
+
+  # What the instances move to. They follow current.json or a pin. When this host ghosted that
+  # version, only the instances on a ghosted version leave it, for the newest version that another
+  # instance runs, so the host stops running a version it found unstable
+  defp target(_state, %{version: nil}), do: nil
+
+  defp target(
+         %{ghosted_version_list: ghosted_version_list} = state,
+         %{version: version} = release
+       ) do
+    ghosted = Enum.map(ghosted_version_list, & &1.version)
+
+    if version in ghosted, do: fall_back_target(state, ghosted), else: {:follow, release}
+  end
+
+  # The history is read only while an instance runs a ghosted version
+  defp fall_back_target(%{name: name, deployments: deployments}, ghosted) do
+    versions = for {_instance, %{version: version}} <- deployments, version != nil, do: version
+
+    with true <- Enum.any?(versions, &(&1 in ghosted)),
+         %Catalog.Version{} = entry <-
+           Enum.find(
+             Status.history_version_list(name, []),
+             &(&1.version in versions and &1.version not in ghosted)
+           ) do
+      {:fall_back, Common.cast_schema_fields(entry, %Deployer.Release.Version{}), ghosted}
+    else
+      _no_fall_back -> nil
+    end
+  end
+
+  defp target_release({:follow, release}), do: release
+  defp target_release({:fall_back, release, _ghosted}), do: release
+
+  # Whether an instance on this version leaves it for the target
+  defp leaves?({:follow, %{version: target_version}}, version), do: version != target_version
+  defp leaves?({:fall_back, _release, ghosted}, version), do: version in ghosted
+  defp leaves?(nil, _version), do: false
+
+  defp move_to_next_instance(state, target) do
+    case next_instance_needing_work(state, target) do
+      {:waiting, instance} ->
+        Logger.info(" # Moving to the waiting instance: #{instance}")
+        %{state | current: instance}
+
+      {:off_target, instance} ->
+        Logger.info(" # Moving to the instance on another version: #{instance}")
+        %{state | current: instance}
+
+      nil ->
+        state
+    end
+  end
+
+  # First an instance that waits, a sname that a restart kept stopped or an empty instance, then
+  # an active one that leaves its version for the target
+  defp next_instance_needing_work(state, target) do
+    instances = Enum.reject(1..state.replicas, &(&1 == state.current))
+
+    Enum.find_value(instances, &(waiting?(state.deployments[&1]) && {:waiting, &1})) ||
+      Enum.find_value(
+        instances,
+        &(off_target?(state.deployments[&1], target) && {:off_target, &1})
+      )
+  end
+
+  # An instance with no sname is active once the rollout visited it with nothing to start. It
+  # leaves for a target that it follows, never for a fallback
+  defp off_target?(%Engine.Deployment{state: :active, version: version}, target),
+    do: leaves?(target, version)
+
+  defp off_target?(_deployment, _target), do: false
 
   # The migrations run from the new version before install. The reply comes as a message, so a
   # long migration does not block the worker
@@ -1000,7 +1136,9 @@ defmodule Deployer.Engine.Worker do
 
   # The version map can move on during a long migration, the next check deploys the new one
   defp apply_pre_commands_outcome(state, pending, {:ok, _pre_commands}) do
-    if Release.get_current_version_map(state.name).version == pending.release.version do
+    target = target(state, Release.get_current_version_map(state.name))
+
+    if target && target_release(target).version == pending.release.version do
       hot_upgrade(state, pending.new_sname, pending.release)
     else
       Logger.warning(
@@ -1121,7 +1259,7 @@ defmodule Deployer.Engine.Worker do
     )
   end
 
-  defp set_timeout_to_rollback(%{deployments: deployments} = state, sname, ports) do
+  defp set_timeout_to_rollback(%{deployments: deployments} = state, sname, version, ports) do
     current_deployment = state.deployments[state.current]
 
     timer_ref =
@@ -1132,16 +1270,21 @@ defmodule Deployer.Engine.Worker do
         []
       )
 
-    # The version put into service runs, even over a sname that a restart kept stopped
+    # The version put into service runs, even over a sname that a restart kept stopped. A window
+    # that a restart reopens keeps fall_back?
     deployments =
-      Map.put(deployments, state.current, %{
-        current_deployment
-        | timer_ref: timer_ref,
+      Map.put(
+        deployments,
+        state.current,
+        Map.merge(current_deployment, %{
+          timer_ref: timer_ref,
           sname: sname,
+          version: version,
           ports: ports,
           state: :active,
           deploying?: true
-      })
+        })
+      )
 
     %{state | deployments: deployments}
   end
@@ -1210,8 +1353,10 @@ defmodule Deployer.Engine.Worker do
       })
     end)
 
+    # A new window is a fallback only when check_deployment/1 marks it as one
     state
-    |> set_timeout_to_rollback(new_sname, available_ports)
+    |> set_timeout_to_rollback(new_sname, release.version, available_ports)
+    |> put_in([Access.key!(:deployments), instance, Access.key(:fall_back?)], false)
     |> Map.put(:deployment_to_terminate, deployment_to_terminate)
     |> Map.put(:available_ports, [])
   end
@@ -1250,7 +1395,6 @@ defmodule Deployer.Engine.Worker do
             # Cleanup Any folder left for the new sname
             Catalog.cleanup(new_sname)
 
-            notify_application_running(sname)
             :ok
 
           error ->
@@ -1277,6 +1421,42 @@ defmodule Deployer.Engine.Worker do
       sname: sname,
       version: to_string(version),
       reason: reason
+    })
+  end
+
+  defp ghost_version(name, sname, version_map) do
+    {:ok, ghosted_version_list} = Status.add_ghosted_version(version_map)
+
+    notify_version_ghosted(
+      name,
+      sname,
+      version_map.version,
+      "not running within deploy_rollback_timeout_ms"
+    )
+
+    ghosted_version_list
+  end
+
+  defp notify_fall_back_failed(sname, version) do
+    Foundation.Notifications.notify("deployment_complete", %{
+      node: node(),
+      sname: sname,
+      status: :error,
+      message:
+        "Rollback to #{version} did not run within deploy_rollback_timeout_ms, it is tried again",
+      version: to_string(version)
+    })
+  end
+
+  # The fallback leaves a version that this host ghosted, current.json still names it
+  defp notify_deployment_rollback(name, sname, from_version, to_version) do
+    Foundation.Notifications.notify("deployment_rollback", %{
+      node: node(),
+      name: name,
+      sname: sname,
+      from_version: to_string(from_version),
+      to_version: to_string(to_version),
+      reason: "#{from_version} is ghosted on this host"
     })
   end
 
@@ -1341,13 +1521,15 @@ defmodule Deployer.Engine.Worker do
 
       full_deployment(state, new_sname, release)
     else
-      # The upgrade reported itself with the versions it moved between, and the sname it
-      # ran on keeps running. A window left open on this instance, e.g. by a start up whose
-      # monitor was already running, would otherwise turn the report the upgrade triggers
-      # into a full deployment of this version
-      current_deployment = %{state.deployments[state.current] | deploying?: false}
-
-      %{state | deployments: Map.put(state.deployments, state.current, current_deployment)}
+      # The upgrade reported itself with the versions it moved between, so this report does not
+      # complete a deployment, also in a window that a start up left open. It runs here, not as
+      # a cast, so no schedule tick moves the rollout before it
+      state
+      |> put_in(
+        [Access.key!(:deployments), state.current, Access.key(:version)],
+        release.version
+      )
+      |> application_running(sname, complete?: false)
     end
   end
 
