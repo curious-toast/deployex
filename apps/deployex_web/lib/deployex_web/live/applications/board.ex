@@ -624,11 +624,18 @@ defmodule DeployexWeb.ApplicationsLive.Board do
             </span>
           </span>
         </div>
-        <Tags.status
-          text={Enum.join(Enum.reject([@instance.status.text, @instance.version], &is_nil/1), " ")}
-          tone={@instance.status.tone}
-          class="font-medium"
-        />
+        <div class="flex min-w-0 items-center gap-2">
+          <Tags.status
+            text={Enum.join(Enum.reject([@instance.status.text, @instance.version], &is_nil/1), " ")}
+            tone={@instance.status.tone}
+            class="font-medium"
+          />
+          <.otp
+            :if={@instance.running and @instance.otp}
+            id={"instance-#{@instance.sname}-otp"}
+            otp={@instance.otp}
+          />
+        </div>
         <.cpu
           id={"instance-#{@instance.sname}-cpu"}
           text={@instance.cpu}
@@ -901,6 +908,36 @@ defmodule DeployexWeb.ApplicationsLive.Board do
         </.link>
       </span>
     </div>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :otp, :atom, required: true, doc: ":connected or :not_connected"
+
+  # Whether DeployEx reaches a running instance over OTP, at a glance next to its status
+  defp otp(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :text,
+        if(assigns.otp == :connected,
+          do: "OTP connected",
+          else: "OTP not connected. Check the cookie and the TLS distribution settings."
+        )
+      )
+
+    ~H"""
+    <span id={@id} class="inline-flex" phx-hook="Tip">
+      <span
+        role="img"
+        aria-label={@text}
+        class="inline-flex"
+        style={"color: #{Tags.tone(if @otp == :connected, do: :success, else: :error)}"}
+      >
+        <Icons.icon name="signal" stroke="2" class="dx-ico size-4" />
+      </span>
+      <span popover="manual" class="dx-tip" aria-hidden="true">{@text}</span>
+    </span>
     """
   end
 

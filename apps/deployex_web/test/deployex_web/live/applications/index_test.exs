@@ -304,6 +304,7 @@ defmodule DeployexWeb.Applications.IndexTest do
 
     html = view |> element("#instance-myphoenixapp-abc123-limits") |> render_click()
     refute html =~ "TLS, visible node"
+    assert has_element?(view, ~s(#instance-myphoenixapp-abc123-otp [aria-label="OTP connected"]))
 
     html = view |> element("#instance-myphoenixapp-abc123-distribution") |> render_click()
     assert html =~ "TLS, visible node"
@@ -344,6 +345,12 @@ defmodule DeployexWeb.Applications.IndexTest do
 
     view |> element("#app-myphoenixapp-urgent-0 button", "Show instance") |> render_click()
     assert has_element?(view, ~s(#instance-myphoenixapp-abc123-limits[aria-expanded="true"]))
+
+    # The instance row shows the OTP state at a glance
+    assert has_element?(
+             view,
+             ~s(#instance-myphoenixapp-abc123-otp [aria-label^="OTP not connected"])
+           )
   end
 
   @tag :capture_log
