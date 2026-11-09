@@ -57,7 +57,7 @@ You do not need to write any of these files by hand, but knowing what they are i
 
 **The pieces**
 
- * An **appup** describes how to move one application from one version to another: which modules to load, which processes to suspend, and where to call `code_change/3`. [Jellyfish][jyf] generates one per application, as `jellyfish.json` for Elixir releases and `.appup` files for Erlang ones.
+ * An **appup** describes how to move one application from one version to another: which modules to load, which processes to suspend, and where to call `code_change/3`. [Jellyfish][jyf] generates one per Elixir application, as a real `.appup` plus a `jellyfish.json` sidecar that records its `from` and `to` versions for DeployEx. For Erlang applications, where Jellyfish does not apply, the `.appup` is written by hand or with another tool, with no sidecar.
  * A **relup** is the plan for the whole release, built by `systools:make_relup/4` from the two releases and their appups. It is ordered, and it fails to build when an application changes version without an appup to describe how.
  * `release_handler` is the OTP module that runs that plan on the live node.
 
@@ -231,8 +231,11 @@ Upgrades are computed from one version to another, so two builds sharing a versi
 
 **Exercise the upgrade before production.**
 Build the current version, build the target, then apply one to the other against a real node.
-The local guides walk through exactly that on a machine, see [Local-Elixir](/guides/docs/local-elixir/README.md), and it belongs in CI afterwards.
-This project does it in [`hot_upgrade.yaml`](/.github/workflows/hot_upgrade.yaml), and the [Calori project](https://github.com/thiagoesteves/calori/blob/main/.github/workflows/hot-upgrade.yaml) shows the same idea for a monitored application.
+The local guides walk through exactly that on a machine, see [Local-Elixir](/guides/docs/local-elixir/README.md).
+Building the two versions the same way belongs in CI, so the artifact used for the real exercise is never built by hand.
+This project does that in [`hot_upgrade.yaml`](/.github/workflows/hot_upgrade.yaml): it checks out both tags, builds each, and publishes the target release with its hot-upgrade information as an artifact.
+It still does not apply the upgrade itself, that step is run by hand against a real node, the same way the local guide does it.
+The [Calori project](https://github.com/thiagoesteves/calori/blob/main/.github/workflows/hot-upgrade.yaml) shows the same build-in-CI approach for a monitored application.
 
 ## Adding or removing a process in the supervision tree
 
