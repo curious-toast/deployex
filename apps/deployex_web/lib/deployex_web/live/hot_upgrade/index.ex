@@ -5,12 +5,14 @@ defmodule DeployexWeb.HotUpgradeLive do
 
   alias Deployer.Github
   alias Deployer.HotUpgrade
-  alias DeployexWeb.Components.Confirm
-  alias DeployexWeb.Components.Progress
+  alias Deployer.HotUpgrade.Progress
   alias DeployexWeb.Guides
   alias DeployexWeb.Helper
+  alias DeployexWeb.HostTime
   alias DeployexWeb.HotUpgrade.Data
+  alias DeployexWeb.HotUpgrade.Steps
   alias DeployexWeb.UI.Icons
+  alias DeployexWeb.UI.StepLeds
   alias DeployexWeb.UI.Tags
   alias Foundation.Common
 
@@ -33,7 +35,12 @@ defmodule DeployexWeb.HotUpgradeLive do
               Upgrade DeployEx itself without downtime
             </p>
           </div>
-          <div class="dx-seg2" role="group" aria-label="Release source">
+          <div
+            :if={is_nil(@downloaded_release)}
+            class="dx-seg2"
+            role="group"
+            aria-label="Release source"
+          >
             <button
               id="hotupgrade-source-file"
               type="button"
@@ -77,7 +84,71 @@ defmodule DeployexWeb.HotUpgradeLive do
           </div>
         </div>
 
-        <section :if={@upload_method == :file} class="dx-card p-5" aria-labelledby="hotupgrade-upload">
+        <section
+          :if={show_progress?(@progress, @dismissed, @watched)}
+          id="hotupgrade-progress"
+          class="dx-card p-5"
+          aria-labelledby="hotupgrade-progress-h"
+        >
+          <h2
+            id="hotupgrade-progress-h"
+            class="mb-4 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-base font-semibold"
+          >
+            DeployEx hot upgrade
+            <span class="dx-mono dx-muted text-[0.8125rem] font-normal">
+              {@progress.from_version} → {@progress.to_version}
+            </span>
+            <time
+              :if={@progress.state != :running and @progress.updated_at}
+              id="hotupgrade-progress-at"
+              class="dx-mono dx-muted text-xs font-normal"
+              datetime={DateTime.to_iso8601(@progress.updated_at)}
+              title={"Host time, #{HostTime.zone()}"}
+            >
+              {HostTime.format(@progress.updated_at, "%Y-%m-%d %H:%M")}
+            </time>
+          </h2>
+          <StepLeds.row
+            id="hotupgrade-progress-leds"
+            label="Hot upgrade steps"
+            steps={Steps.states(@progress)}
+          />
+          <p
+            :if={@progress.state == :running}
+            class="mt-3 flex items-center gap-2 text-[0.8125rem]"
+            aria-live="polite"
+          >
+            <span class="loading loading-spinner loading-sm"></span>{Steps.line(@progress)}
+          </p>
+          <div
+            :if={@progress.state == :success}
+            class="dx-callout dx-callout-info m-0 mt-4"
+            role="status"
+          >
+            <Icons.icon name="check-circle" class="dx-callout-ico" />
+            <span class="dx-callout-text">{List.last(@progress.messages)}</span>
+          </div>
+          <.failure :if={@progress.state == :error} id="hotupgrade-progress-error">
+            <b>{Steps.line(@progress)}</b>
+            <span>{List.last(@progress.messages)}</span>
+          </.failure>
+          <div :if={@progress.state != :running} class="mt-4 flex justify-end">
+            <button
+              id="hotupgrade-progress-done"
+              type="button"
+              class="dx-btn"
+              phx-click="hotupgrade-progress-done"
+            >
+              Done
+            </button>
+          </div>
+        </section>
+
+        <section
+          :if={@upload_method == :file and is_nil(@downloaded_release)}
+          class="dx-card p-5"
+          aria-labelledby="hotupgrade-upload"
+        >
           <h2 id="hotupgrade-upload" class="mb-4 flex items-center gap-2 text-base font-semibold">
             <Icons.icon name="arrow-up-tray" class="dx-ico dx-muted size-5" />
             Upload Hot Upgrade Release
@@ -128,7 +199,7 @@ defmodule DeployexWeb.HotUpgradeLive do
         </section>
 
         <section
-          :if={@upload_method == :github}
+          :if={@upload_method == :github and is_nil(@downloaded_release)}
           class="dx-card p-5"
           aria-labelledby="hotupgrade-github"
         >
@@ -236,7 +307,7 @@ defmodule DeployexWeb.HotUpgradeLive do
 
         <section
           :if={@downloaded_release}
-          class="dx-card p-5"
+          class="dx-card overflow-hidden p-5"
           aria-labelledby="hotupgrade-release"
           phx-mounted={
             JS.transition(
@@ -245,95 +316,78 @@ defmodule DeployexWeb.HotUpgradeLive do
             )
           }
         >
-          <h2 id="hotupgrade-release" class="mb-4 flex items-center gap-2 text-base font-semibold">
+          <h2
+            id="hotupgrade-release"
+            class="flex flex-wrap items-center gap-x-3 gap-y-1 text-base font-semibold"
+          >
             <Icons.icon
               name={if @downloaded_release.error, do: "x-circle", else: "check-circle"}
               class="dx-ico size-5"
               style={"color: var(#{if @downloaded_release.error, do: "--dx-error-text", else: "--dx-success-text"})"}
             /> Uploaded release
+            <span :if={!@downloaded_release.error} class="dx-mono">
+              {@downloaded_release.name} {@downloaded_release.to_version}
+            </span>
           </h2>
 
-          <div class="mb-5 grid grid-cols-1 gap-4 md:grid-cols-3">
-            <div class="dx-upload-box">
-              <h3 class="mb-3 text-[0.875rem] font-semibold">Release Information</h3>
-              <dl class="flex flex-col gap-2">
-                <.detail label="Application" mono>{@downloaded_release.name}</.detail>
-                <.detail :if={!@downloaded_release.error} label="Version" mono>
-                  {@downloaded_release.to_version}
-                </.detail>
-                <.detail label="Filename" mono>{@downloaded_release.filename}</.detail>
-                <.detail label="Size">{Helper.format_bytes(@downloaded_release.size)}</.detail>
-                <.detail label="Sha256" mono>{@downloaded_release.sha256}</.detail>
-              </dl>
-            </div>
+          <dl class="mt-4 flex flex-wrap gap-x-8 gap-y-3">
+            <.detail :if={!@downloaded_release.error} label="Version" mono>
+              {@downloaded_release.to_version}
+            </.detail>
+            <.detail label="Current version" mono>
+              {@downloaded_release.from_version || "N/A"}
+            </.detail>
+            <.detail :if={!@downloaded_release.error} label="Upgrade type">
+              <Tags.deploy_tag type={:hot} />
+            </.detail>
+            <.detail :if={@downloaded_release.error} label="Error">
+              <span style="color: var(--dx-error-text)">{@downloaded_release.error}</span>
+            </.detail>
+          </dl>
+          <dl class="mt-3 flex flex-wrap gap-x-8 gap-y-3">
+            <.detail label="Filename" mono>{@downloaded_release.filename}</.detail>
+            <.detail label="Size">{Helper.format_bytes(@downloaded_release.size)}</.detail>
+            <.detail label="Sha256" mono>{@downloaded_release.sha256}</.detail>
+          </dl>
 
-            <div class="dx-upload-box">
-              <h3 class="mb-3 text-[0.875rem] font-semibold">Upgrade Details</h3>
-              <dl class="flex flex-col gap-2">
-                <.detail label="Current Version" mono>
-                  {@downloaded_release.from_version || "N/A"}
-                </.detail>
-                <.detail :if={!@downloaded_release.error} label="Target Version" mono>
-                  {@downloaded_release.to_version}
-                </.detail>
-                <.detail :if={!@downloaded_release.error} label="Upgrade Type">
-                  <Tags.deploy_tag type={:hot} />
-                </.detail>
-                <.detail :if={@downloaded_release.error} label="Error">
-                  <span style="color: var(--dx-error-text)">{@downloaded_release.error}</span>
-                </.detail>
-              </dl>
-            </div>
+          <%!-- Open by default, and phx-update="ignore" keeps the viewer's toggle through the renders --%>
+          <details
+            :if={@downloaded_release.jellyfish_info not in [nil, []]}
+            id="hotupgrade-release-apps"
+            class="mt-3 text-[0.8125rem]"
+            open
+            phx-update="ignore"
+          >
+            <summary class="cursor-pointer font-semibold">
+              Applications in this release ({length(@downloaded_release.jellyfish_info)})
+            </summary>
+            <table class="mt-2 w-full text-left text-xs">
+              <thead>
+                <tr class="dx-lbl">
+                  <th class="pb-1 font-semibold">Name</th>
+                  <th class="pb-1 font-semibold">Type</th>
+                  <th class="pb-1 font-semibold">From</th>
+                  <th class="pb-1 font-semibold">To</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr :for={app <- @downloaded_release.jellyfish_info}>
+                  <td class="dx-mono py-1 font-medium">{app.name}</td>
+                  <td class="py-1">{app.type}</td>
+                  <td class="dx-mono dx-muted py-1">{app.from}</td>
+                  <td class="dx-mono py-1 font-medium">{app.to}</td>
+                </tr>
+              </tbody>
+            </table>
+          </details>
 
-            <div class="dx-upload-box">
-              <h3 class="mb-3 text-[0.875rem] font-semibold">Applications info</h3>
-              <table
-                :if={@downloaded_release.jellyfish_info not in [nil, []]}
-                class="w-full text-left text-xs"
-              >
-                <thead>
-                  <tr class="dx-lbl">
-                    <th class="pb-1 font-semibold">Name</th>
-                    <th class="pb-1 font-semibold">Type</th>
-                    <th class="pb-1 font-semibold">From</th>
-                    <th class="pb-1 font-semibold">To</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr :for={app <- @downloaded_release.jellyfish_info}>
-                    <td class="dx-mono py-1 font-medium">{app.name}</td>
-                    <td class="py-1">{app.type}</td>
-                    <td class="dx-mono dx-muted py-1">{app.from}</td>
-                    <td class="dx-mono py-1 font-medium">{app.to}</td>
-                  </tr>
-                </tbody>
-              </table>
-              <p
-                :if={@downloaded_release.jellyfish_info in [nil, []]}
-                class="dx-muted py-4 text-center text-[0.8125rem]"
-              >
-                No application info available
-              </p>
-            </div>
-          </div>
-
-          <div :if={!@downloaded_release.error} class="dx-callout dx-callout-warning m-0 mb-5">
-            <Icons.icon name="warning" class="dx-callout-ico" />
-            <div class="dx-callout-text">
-              <b>Important Notice</b>
-              <ul class="list-inside list-disc text-[0.8125rem] text-(--dx-base-content)">
-                <li>This will perform a hot upgrade without restarting the application</li>
-                <li>Ensure the release is compatible with the current version</li>
-                <li>This operation cannot be easily undone</li>
-                <li>Consider backing up current state before proceeding</li>
-              </ul>
-            </div>
-          </div>
-
-          <div class="flex justify-end gap-2">
+          <div
+            :if={!asking_apply?(@live_action, @downloaded_release, @progress)}
+            class="mt-4 flex justify-end gap-2"
+          >
             <button type="button" phx-click="remove-release" class="dx-btn">Remove</button>
             <.link
-              :if={!@downloaded_release.error}
+              :if={!@downloaded_release.error and !running?(@progress)}
               id={Helper.normalize_id("hotupgrade-apply-#{@downloaded_release.name}")}
               class="dx-btn dx-btn-primary"
               patch={~p"/hotupgrade/apply"}
@@ -341,106 +395,35 @@ defmodule DeployexWeb.HotUpgradeLive do
               <Icons.icon name="check" class="dx-ico size-4" /> Apply Hot Upgrade
             </.link>
           </div>
+          <div
+            :if={asking_apply?(@live_action, @downloaded_release, @progress)}
+            id="hotupgrade-ask"
+            class="dx-ask dx-ask-warn -mx-5 mt-5 -mb-5"
+            role="group"
+            aria-label="Confirm the hot upgrade"
+          >
+            <span class="flex-[1_1_360px] text-base">
+              <b>Apply the hot upgrade to {@downloaded_release.to_version}?</b>
+              DeployEx keeps running and its code is replaced in place, and the monitored applications are
+              not affected. The upgrade cannot be undone from this page.
+              A failure does not roll back on its own, and a restart of the service returns DeployEx to the
+              last permanent version.
+            </span>
+            <button
+              id="hotupgrade-execute"
+              type="button"
+              class="dx-btn dx-btn-danger"
+              phx-click="hotupgrade-execute"
+            >
+              Apply hot upgrade
+            </button>
+            <.link id="hotupgrade-cancel" class="dx-btn no-underline" patch={~p"/hotupgrade"}>
+              Cancel
+            </.link>
+          </div>
         </section>
       </div>
     </Layouts.app>
-
-    <%= cond do %>
-      <% @live_action == :apply and @upgrade_state != :init -> %>
-        <Progress.content id={"hotupgrade-progress-modal-#{@downloaded_release.name}"}>
-          <:header>Hot Upgrade Progress</:header>
-
-          <div id="upgrade-progress" class="mt-6 flex flex-col gap-4">
-            <div class="flex items-center justify-between px-4">
-              <h3 class="font-semibold">Upgrade Progress</h3>
-              <span :if={@upgrade_state == :running} class="dx-muted text-[0.8125rem]">
-                Step {length(@upgrade_progress)} of {@total_upgrade_steps}
-              </span>
-            </div>
-            <div class="dx-upload-box">
-              <div
-                id="upgrade-progress-log"
-                phx-hook="AutoScroll"
-                class="dx-mono flex max-h-48 flex-col gap-2 overflow-y-auto text-[0.8125rem]"
-              >
-                <div :for={line <- @upgrade_progress} class="flex items-start gap-2">
-                  <Icons.icon
-                    name="check"
-                    class="dx-ico mt-0.5 size-4 flex-none"
-                    style="color: var(--dx-success-text)"
-                  />
-                  <span class="flex-1">{line}</span>
-                </div>
-                <div
-                  :if={@upgrade_state == :running and @upgrade_progress != []}
-                  class="dx-muted flex items-center gap-2 italic"
-                >
-                  <span class="loading loading-spinner loading-xs"></span> Processing...
-                </div>
-              </div>
-            </div>
-            <div :if={@upgrade_state not in [:success, :error]} class="flex items-center gap-2 px-4">
-              <span class="loading loading-spinner loading-sm"></span>
-              <span class="dx-muted text-[0.8125rem]">Applying hot upgrade…</span>
-            </div>
-            <div :if={@upgrade_state == :success} class="dx-callout dx-callout-info m-0" role="status">
-              <Icons.icon name="check-circle" class="dx-callout-ico" />
-              <span class="dx-callout-text">Hot upgrade completed successfully!</span>
-            </div>
-            <.failure :if={@upgrade_state == :error}>Hot upgrade failed!</.failure>
-          </div>
-
-          <:footer :if={@upgrade_state != :running}>
-            <Progress.done_button
-              id="hotupgrade-progress-done"
-              event="hotupgrade-progress-done"
-              value={@downloaded_release.name}
-            >
-              Done
-            </Progress.done_button>
-          </:footer>
-        </Progress.content>
-      <% @live_action == :apply and @downloaded_release != nil and @downloaded_release.error == nil -> %>
-        <Confirm.content id={"hotupgrade-modal-#{@downloaded_release.name}"}>
-          <:header>Hot upgrade</:header>
-
-          <div class="flex flex-col gap-4">
-            <p>
-              You are about to perform a <b style="color: var(--dx-hot-text)">hot upgrade</b>
-              for <span class="dx-mono font-semibold">{@downloaded_release.name}</span>.
-            </p>
-            <div class="dx-callout dx-callout-warning m-0">
-              <Icons.icon name="warning" class="dx-callout-ico" />
-              <div class="dx-callout-text">
-                <b>Before you apply</b>
-                <ul class="list-inside list-disc text-[0.8125rem] text-(--dx-base-content)">
-                  <li>DeployEx keeps running, its code is replaced in place</li>
-                  <li>Processes with a code_change callback have their state migrated live</li>
-                  <li>Monitored applications are not affected, they run on separate nodes</li>
-                  <li>
-                    A failure does not roll back on its own. DeployEx stays up and logs the
-                    error, and restarting the service returns it to the last permanent version
-                  </li>
-                </ul>
-              </div>
-            </div>
-          </div>
-
-          <:footer>
-            <Confirm.cancel_button id="hotupgrade-cancel">
-              Cancel
-            </Confirm.cancel_button>
-            <Confirm.danger_button
-              id="hotupgrade-execute"
-              event="hotupgrade-execute"
-              value={@downloaded_release.name}
-            >
-              Yes, Apply Hot Upgrade
-            </Confirm.danger_button>
-          </:footer>
-        </Confirm.content>
-      <% true -> %>
-    <% end %>
     """
   end
 
@@ -506,10 +489,8 @@ defmodule DeployexWeb.HotUpgradeLive do
   defp default_assigns(socket) do
     socket
     |> assign(:downloaded_release, nil)
-    |> assign(:applying_upgrade, false)
-    |> assign(:upgrade_progress, [])
-    |> assign(:upgrade_state, :init)
-    |> assign(:total_upgrade_steps, 8)
+    |> assign_progress(HotUpgrade.deployex_progress())
+    |> assign(:dismissed, nil)
     |> assign(:current_path, "/hotupgrade")
     |> assign(:node, Node.self())
     |> assign(:upload_method, :file)
@@ -534,6 +515,32 @@ defmodule DeployexWeb.HotUpgradeLive do
     |> assign(:github, %{github_new() | download_error: msg})
     |> put_flash(:error, msg)
   end
+
+  # A viewer who saw the run running also sees its success. Anyone sees a run that runs or failed
+  # A loaded release that this host just upgraded to is cleared, so the upload box shows again
+  defp assign_progress(socket, progress) do
+    socket
+    |> assign(:progress, progress)
+    |> assign(:watched, Map.get(socket.assigns, :watched, false) or running?(progress))
+    |> update(:downloaded_release, &if(applied?(progress, &1), do: nil, else: &1))
+  end
+
+  defp show_progress?(nil, _dismissed, _watched), do: false
+  defp show_progress?(progress, progress, _watched), do: false
+  defp show_progress?(%Progress{state: :success}, _dismissed, watched), do: watched
+  defp show_progress?(%Progress{}, _dismissed, _watched), do: true
+
+  defp running?(progress), do: match?(%Progress{state: :running}, progress)
+
+  defp asking_apply?(action, release, progress),
+    do: action == :apply and is_nil(release.error) and not running?(progress)
+
+  # A release that this host just upgraded to has nothing left to apply
+  # The check gives the release versions as charlists
+  defp applied?(%Progress{state: :success, to_version: version}, %{to_version: to_version}),
+    do: version == to_string(to_version)
+
+  defp applied?(_progress, _release), do: false
 
   defp github_new(id \\ nil, status \\ nil) do
     %{
@@ -561,9 +568,7 @@ defmodule DeployexWeb.HotUpgradeLive do
   end
 
   defp apply_action(socket, :apply, _params) do
-    socket
-    |> assign(:applying_upgrade, true)
-    |> assign(:page_title, "Hot upgrade confirmation")
+    assign(socket, :page_title, "Hot upgrade confirmation")
   end
 
   @impl true
@@ -617,71 +622,62 @@ defmodule DeployexWeb.HotUpgradeLive do
     {:noreply, cancel_upload(socket, :hotupgrade, ref)}
   end
 
-  def handle_event("confirm-close-modal", _params, socket) do
-    {:noreply,
-     socket
-     |> assign(:applying_upgrade, false)
-     |> assign(:upgrade_state, :init)
-     |> push_patch(to: ~p"/hotupgrade")}
-  end
-
-  def handle_event(event, _params, socket)
-      when event in ["remove-release", "hotupgrade-progress-done"] do
+  def handle_event("remove-release", _params, socket) do
     {:noreply,
      socket
      |> assign(:downloaded_release, nil)
-     |> assign(:applying_upgrade, false)
-     |> assign(:upgrade_state, :init)
-     |> assign(:upgrade_progress, [])
      |> push_patch(to: ~p"/hotupgrade")}
   end
 
-  def handle_event("hotupgrade-execute", _params, socket) do
-    # Start Hotupgrade execution
-    HotUpgrade.deployex_execute(socket.assigns.downloaded_release.download_path,
-      sync_execution: false
-    )
-
+  # Done hides the run it was clicked on for this viewer. A new run differs, so it shows again
+  def handle_event("hotupgrade-progress-done", _params, socket) do
     {:noreply,
      socket
-     |> assign(:applying_upgrade, true)
-     |> assign(:upgrade_state, :running)
-     |> assign(:upgrade_progress, [])
-     |> assign(:page_title, "Hot upgrade in progress")}
+     |> assign(:dismissed, socket.assigns.progress)
+     |> push_patch(to: ~p"/hotupgrade")}
   end
 
+  # The check runs here, before the upgrade starts in the background, so a refused release is
+  # reported at once. A started one shows its first step until the first event replaces it
+  def handle_event(
+        "hotupgrade-execute",
+        _params,
+        %{assigns: %{downloaded_release: release}} = socket
+      ) do
+    case HotUpgrade.deployex_execute(release.download_path, sync_execution: false) do
+      :ok ->
+        progress = %Progress{
+          sname: release.name,
+          from_version: to_string(release.from_version),
+          to_version: to_string(release.to_version)
+        }
+
+        {:noreply, socket |> assign_progress(progress) |> push_patch(to: ~p"/hotupgrade")}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Hot upgrade refused: #{refusal(reason)}")
+         |> push_patch(to: ~p"/hotupgrade")}
+    end
+  end
+
+  # Every viewer follows the run, whatever started it. The table holds the run, so an event from this
+  # host is a reason to read it again
   @impl true
   def handle_info(
-        {:hot_upgrade_progress, source_node, _sname, msg},
-        %{assigns: %{node: node, applying_upgrade: true}} = socket
+        {:hot_upgrade_progress, source_node, _sname, _message},
+        %{assigns: %{node: node}} = socket
       )
-      when source_node == node do
-    {:noreply,
-     socket
-     |> update(:upgrade_progress, fn logs -> logs ++ [msg] end)}
-  end
+      when source_node == node,
+      do: {:noreply, assign_progress(socket, HotUpgrade.deployex_progress())}
 
   def handle_info(
-        {:hot_upgrade_complete, source_node, _sname, :ok, msg},
-        %{assigns: %{node: node, applying_upgrade: true}} = socket
+        {:hot_upgrade_complete, source_node, _sname, _status, _message},
+        %{assigns: %{node: node}} = socket
       )
-      when source_node == node do
-    {:noreply,
-     socket
-     |> assign(:upgrade_state, :success)
-     |> update(:upgrade_progress, fn logs -> logs ++ [msg] end)}
-  end
-
-  def handle_info(
-        {:hot_upgrade_complete, source_node, _sname, :error, msg},
-        %{assigns: %{node: node, applying_upgrade: true}} = socket
-      )
-      when source_node == node do
-    {:noreply,
-     socket
-     |> assign(:upgrade_state, :error)
-     |> update(:upgrade_progress, fn logs -> logs ++ [msg] end)}
-  end
+      when source_node == node,
+      do: {:noreply, assign_progress(socket, HotUpgrade.deployex_progress())}
 
   def handle_info(
         {:github_download_artifact, source_node,
@@ -765,17 +761,17 @@ defmodule DeployexWeb.HotUpgradeLive do
       false ->
         {:postpone, %{hotupgrade | error: " not a .tar.gz file"}}
 
-      {:error, :full_deployment} ->
-        {:postpone, %{hotupgrade | error: "full deployment only"}}
-
-      {:error, {:otp_mismatch, %{running_otp: otp}}} ->
-        {:postpone, %{hotupgrade | error: "wrong OTP, this installation runs OTP #{otp}"}}
-
-      {:error, :invalid_release_file} ->
-        {:postpone, %{hotupgrade | error: "not a deployex release"}}
-
-      {:error, _reason} ->
-        {:postpone, %{hotupgrade | error: "invalid release"}}
+      {:error, reason} ->
+        {:postpone, %{hotupgrade | error: refusal(reason)}}
     end
   end
+
+  # Why the check refused a release, at upload and again at Apply
+  defp refusal(:full_deployment), do: "full deployment only"
+
+  defp refusal({:otp_mismatch, %{running_otp: otp}}),
+    do: "wrong OTP, this installation runs OTP #{otp}"
+
+  defp refusal(:invalid_release_file), do: "not a deployex release"
+  defp refusal(_reason), do: "invalid release"
 end

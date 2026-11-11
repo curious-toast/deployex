@@ -9,6 +9,7 @@ defmodule DeployexWeb.UI.ComponentsTest do
   alias DeployexWeb.UI.Meter
   alias DeployexWeb.UI.Shell
   alias DeployexWeb.UI.ShellHelp
+  alias DeployexWeb.UI.StepLeds
   alias DeployexWeb.UI.ThemeSwitch
 
   describe "Meter.meter/1" do
@@ -125,6 +126,20 @@ defmodule DeployexWeb.UI.ComponentsTest do
   end
 
   describe "Bell.bell/1" do
+    test "puts the pinned row above the events, with the run dot on the bell" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <Bell.bell items={[]} all_href="/logs/live" all_text="View logs">
+          <:pinned><a id="run" class="dx-nitem dx-nitem-run">Running</a></:pinned>
+        </Bell.bell>
+        """)
+
+      assert html =~ ~s(class="dx-nrun")
+      assert html =~ ~r/<a id="run".*data-bell-empty/s
+    end
+
     test "lists the items with their tone, and says when there is none" do
       items = [
         %{
@@ -183,6 +198,42 @@ defmodule DeployexWeb.UI.ComponentsTest do
     end
   end
 
+  describe "StepLeds.row/1" do
+    test "names the step and its state in each tooltip and label, with icons on done and failed" do
+      html =
+        render_component(&StepLeds.row/1,
+          id: "leds",
+          label: "Steps",
+          steps: [{:done, "a"}, {:failed, "b"}, {:current, "c"}, {:pending, "d"}]
+        )
+
+      assert html =~ ~s(role="list")
+      assert html =~ ~s(aria-label="Steps")
+      assert [_, _, _, _] = Regex.scan(~r/role="listitem"/, html)
+      assert [_, _, _, _] = Regex.scan(~r/phx-hook="Tip"/, html)
+      assert html =~ ~s(aria-label="Step 1, Done: a")
+      assert html =~ ~s(aria-label="Step 2, Failed: b")
+      assert html =~ ~s(aria-label="Step 3, In progress: c")
+      assert html =~ ~s(aria-label="Step 4, Pending: d")
+      assert html =~ "Failed: b"
+      assert [_, _] = Regex.scan(~r/dx-led-ico/, html)
+    end
+
+    test "the compact row is hidden from screen readers, with no tooltips" do
+      html =
+        render_component(&StepLeds.row/1,
+          id: "leds",
+          steps: [{:done, "a"}, {:current, "b"}],
+          compact: true
+        )
+
+      assert html =~ ~s(aria-hidden="true")
+      assert html =~ "dx-leds-compact"
+      refute html =~ "phx-hook"
+      refute html =~ "tabindex"
+    end
+  end
+
   describe "Shell" do
     test "shell/1 has the top bar, the sidebar and the content" do
       assigns = %{}
@@ -205,6 +256,32 @@ defmodule DeployexWeb.UI.ComponentsTest do
       assert html =~ ~s(id="meters")
       assert html =~ ~s(id="nav")
       assert html =~ ~s(id="page")
+    end
+
+    test "shell/1 puts the sidebar footer under the navigation, and leaves it out when empty" do
+      assigns = %{}
+
+      html =
+        rendered_to_string(~H"""
+        <Shell.shell console="Agent Console" home="/applications">
+          <:sidebar><a id="nav">Nav</a></:sidebar>
+          <:sidebar_footer><span id="version">1.2.3</span></:sidebar_footer>
+          <p>Page</p>
+        </Shell.shell>
+        """)
+
+      assert html =~
+               ~r/id="nav".*<\/nav>\s*<div class="dx-side-foot"><span id="version">1.2.3<\/span>/s
+
+      html =
+        rendered_to_string(~H"""
+        <Shell.shell console="Agent Console" home="/applications">
+          <:sidebar><a id="nav">Nav</a></:sidebar>
+          <p>Page</p>
+        </Shell.shell>
+        """)
+
+      refute html =~ "dx-side-foot"
     end
 
     test "nav_item/1 marks only the active page" do

@@ -11,6 +11,18 @@ defmodule DeployexWeb.HotUpgrade.UploadTest do
     :log_in_default_user
   ]
 
+  # The messages of a self-upgrade, each one sent before its step runs
+  @announced [
+    "Starting upgrade for deployex...",
+    "Unpacking release",
+    "Creating relup file",
+    "Checking release can be installed",
+    "Resolving the runtime configuration",
+    "Adding the runtime configuration to the relup",
+    "Installing release",
+    "Making release 1.1.0 permanent"
+  ]
+
   describe "mount and render" do
     @tag :capture_log
     test "GET /hotupgrade renders the hot upgrade manager page", %{conn: conn} do
@@ -21,6 +33,10 @@ defmodule DeployexWeb.HotUpgrade.UploadTest do
 
       assert html =~ ~s(<h1 class="text-[1.625rem] font-bold tracking-[-0.02em]">Hot Upgrade</h1>)
       assert html =~ "Upgrade DeployEx itself without downtime"
+
+      # The sidebar shows the DeployEx version
+      assert html =~
+               ~s(<span id="sidebar-version" class="dx-mono">#{Application.spec(:deployex_web, :vsn)}</span>)
 
       # The page is for DeployEx, and points to the upgrade as code
       assert html =~ "This page upgrades DeployEx itself"
@@ -43,10 +59,7 @@ defmodule DeployexWeb.HotUpgrade.UploadTest do
       %{socket: socket} = :sys.get_state(live.pid)
 
       assert socket.assigns.downloaded_release == nil
-      assert socket.assigns.applying_upgrade == false
-      assert socket.assigns.upgrade_progress == []
-      assert socket.assigns.upgrade_state == :init
-      assert socket.assigns.total_upgrade_steps == 8
+      assert socket.assigns.dismissed == nil
       assert socket.assigns.current_path == "/hotupgrade"
     end
   end
@@ -103,6 +116,36 @@ defmodule DeployexWeb.HotUpgrade.UploadTest do
     end
 
     @tag :capture_log
+    test "the release takes the upload box's place, and Remove brings the box back", %{conn: conn} do
+      Deployer.HotUpgradeMock
+      |> expect(:subscribe_events, fn -> :ok end)
+
+      check_data = %{
+        create_check_data()
+        | jellyfish_info: [%{name: "deployer", type: "project", from: "1.0.0", to: "1.1.0"}]
+      }
+
+      with_mock Deployer.HotUpgrade, [:passthrough],
+        deployex_check: fn _path -> {:ok, check_data} end,
+        deployex_progress: fn -> nil end do
+        {:ok, live, _html} = live(conn, ~p"/hotupgrade")
+        assert has_element?(live, "#upload-form")
+
+        download_file(live, "deployex-2.0.0.tar.gz")
+
+        assert has_element?(live, "#hotupgrade-release", "deployex 1.1.0")
+        assert has_element?(live, "details#hotupgrade-release-apps[open]")
+        refute has_element?(live, "#upload-form")
+        refute has_element?(live, "#hotupgrade-source-file")
+
+        live |> element("button", "Remove") |> render_click()
+
+        assert has_element?(live, "#upload-form")
+        assert has_element?(live, "#hotupgrade-source-file")
+      end
+    end
+
+    @tag :capture_log
     test "displays uploaded release information", %{conn: conn} do
       Deployer.HotUpgradeMock
       |> expect(:subscribe_events, fn -> :ok end)
@@ -120,7 +163,7 @@ defmodule DeployexWeb.HotUpgrade.UploadTest do
 
         assert html =~ "Uploaded release"
         assert html =~ check_data.name
-        assert html =~ check_data.to_version
+        assert html =~ to_string(check_data.to_version)
         assert html =~ filename
       end
     end
@@ -187,7 +230,8 @@ defmodule DeployexWeb.HotUpgrade.UploadTest do
       check_data = create_check_data()
 
       with_mock Deployer.HotUpgrade, [:passthrough],
-        deployex_check: fn _path -> {:ok, check_data} end do
+        deployex_check: fn _path -> {:ok, check_data} end,
+        deployex_progress: fn -> nil end do
         {:ok, live, _html} = live(conn, ~p"/hotupgrade")
 
         filename = "deployex-2.0.0.tar.gz"
@@ -202,63 +246,58 @@ defmodule DeployexWeb.HotUpgrade.UploadTest do
     end
 
     @tag :capture_log
-    test "shows confirmation modal on apply action", %{conn: conn} do
+    test "asks to confirm in the page, with no modal", %{conn: conn} do
       Deployer.HotUpgradeMock
       |> expect(:subscribe_events, fn -> :ok end)
 
       check_data = create_check_data()
 
       with_mock Deployer.HotUpgrade, [:passthrough],
-        deployex_check: fn _path -> {:ok, check_data} end do
+        deployex_check: fn _path -> {:ok, check_data} end,
+        deployex_progress: fn -> nil end do
         {:ok, live, _html} = live(conn, ~p"/hotupgrade")
 
-        filename = "deployex-3.0.0.tar.gz"
-        download_file(live, filename)
+        download_file(live, "deployex-3.0.0.tar.gz")
 
         html =
           live |> element("#hotupgrade-apply-deployex", "Apply Hot Upgrade") |> render_click()
 
-        assert html =~ "Hot upgrade"
-        assert html =~ "Before you apply"
-        assert html =~ "Yes, Apply Hot Upgrade"
+        assert has_element?(live, ~s(#hotupgrade-ask[role="group"]))
+        assert html =~ "Apply the hot upgrade to 1.1.0?"
+        refute has_element?(live, "#hotupgrade-apply-deployex")
+        refute html =~ "modal-open"
 
-        # release_handler swaps code in the running VM, so nothing is stopped. The confirmation
-        # used to claim the opposite, contradicting the release card on the same page
+        # release_handler swaps code in the running VM, so nothing is stopped
         assert html =~ "DeployEx keeps running"
         assert html =~ "does not roll back on its own"
-        refute html =~ "All running application instances will be terminated"
-        refute html =~ "Warning: Destructive Operation"
       end
     end
 
     @tag :capture_log
-    test "cancels hot upgrade from confirmation modal", %{conn: conn} do
+    test "cancels the confirm", %{conn: conn} do
       Deployer.HotUpgradeMock
       |> expect(:subscribe_events, fn -> :ok end)
 
       check_data = create_check_data()
 
       with_mock Deployer.HotUpgrade, [:passthrough],
-        deployex_check: fn _path -> {:ok, check_data} end do
+        deployex_check: fn _path -> {:ok, check_data} end,
+        deployex_progress: fn -> nil end do
         {:ok, live, _html} = live(conn, ~p"/hotupgrade")
 
-        filename = "deployex-3.0.0.tar.gz"
-        download_file(live, filename)
-
+        download_file(live, "deployex-3.0.0.tar.gz")
         live |> element("#hotupgrade-apply-deployex", "Apply Hot Upgrade") |> render_click()
 
-        assert has_element?(live, "#cancel-button-hotupgrade-cancel")
+        live |> element("#hotupgrade-cancel", "Cancel") |> render_click()
 
-        live
-        |> element("#cancel-button-hotupgrade-cancel", "Cancel")
-        |> render_click()
-
-        refute has_element?(live, "#cancel-button-hotupgrade-cancel")
+        assert_patch(live, ~p"/hotupgrade")
+        refute has_element?(live, "#hotupgrade-ask")
+        assert has_element?(live, "#hotupgrade-apply-deployex")
       end
     end
 
     @tag :capture_log
-    test "executes hot upgrade when confirmed", %{conn: conn} do
+    test "executes, then shows the first step in the page at once", %{conn: conn} do
       test_pid = self()
 
       Deployer.HotUpgradeMock
@@ -268,292 +307,236 @@ defmodule DeployexWeb.HotUpgrade.UploadTest do
 
       with_mock Deployer.HotUpgrade, [:passthrough],
         deployex_check: fn _path -> {:ok, check_data} end,
+        deployex_progress: fn -> nil end,
         deployex_execute: fn _path, _opts ->
           send(test_pid, :upgrade_executed)
           :ok
         end do
         {:ok, live, _html} = live(conn, ~p"/hotupgrade")
 
-        filename = "deployex-3.0.0.tar.gz"
-        download_file(live, filename)
-
-        live
-        |> element("#hotupgrade-apply-deployex", "Apply Hot Upgrade")
-        |> render_click()
-
-        live
-        |> element("#danger-button-hotupgrade-execute", "Yes, Apply Hot Upgrade")
-        |> render_click()
-
-        %{socket: socket} = :sys.get_state(live.pid)
+        download_file(live, "deployex-3.0.0.tar.gz")
+        live |> element("#hotupgrade-apply-deployex", "Apply Hot Upgrade") |> render_click()
+        live |> element("#hotupgrade-execute", "Apply hot upgrade") |> render_click()
 
         assert_receive :upgrade_executed, 1_000
-        assert socket.assigns.applying_upgrade == true
-        assert socket.assigns.upgrade_state == :running
+        assert_patch(live, ~p"/hotupgrade")
+
+        html = render(live)
+        assert html =~ "Step 1 of 8: Starting the upgrade"
+        assert html =~ "1.0.0 → 1.1.0"
+        refute has_element?(live, "#hotupgrade-apply-deployex")
+        refute html =~ "modal-open"
+      end
+    end
+
+    @tag :capture_log
+    test "reports a release that the check refuses", %{conn: conn} do
+      Deployer.HotUpgradeMock
+      |> expect(:subscribe_events, fn -> :ok end)
+
+      check_data = create_check_data()
+
+      with_mock Deployer.HotUpgrade, [:passthrough],
+        deployex_check: fn _path -> {:ok, check_data} end,
+        deployex_progress: fn -> nil end,
+        deployex_execute: fn _path, _opts -> {:error, :full_deployment} end do
+        {:ok, live, _html} = live(conn, ~p"/hotupgrade")
+
+        download_file(live, "deployex-3.0.0.tar.gz")
+        live |> element("#hotupgrade-apply-deployex", "Apply Hot Upgrade") |> render_click()
+        live |> element("#hotupgrade-execute", "Apply hot upgrade") |> render_click()
+
+        assert render(live) =~ "Hot upgrade refused: full deployment only"
+        refute has_element?(live, "#hotupgrade-progress")
       end
     end
   end
 
-  describe "hot upgrade progress events" do
+  describe "hot upgrade progress" do
     @tag :capture_log
-    test "handles hot_upgrade_progress message", %{conn: conn} do
-      test_pid = self()
-
+    test "shows a run that started elsewhere, like deployex.sh, when the page opens", %{
+      conn: conn
+    } do
       Deployer.HotUpgradeMock
       |> expect(:subscribe_events, fn -> :ok end)
 
-      check_data = create_check_data()
+      # The server stamps every step, and a running run shows no ended time
+      progress_fixture(%{
+        run(:running, Enum.take(@announced, 5))
+        | updated_at: ~U[2026-11-10 09:30:00Z]
+      })
 
-      with_mock Deployer.HotUpgrade, [:passthrough],
-        deployex_check: fn _path -> {:ok, check_data} end,
-        deployex_execute: fn _path, _opts ->
-          send(test_pid, :upgrade_executed)
-          :ok
-        end do
-        {:ok, live, _html} = live(conn, ~p"/hotupgrade")
+      with_mock Deployer.HotUpgrade, [:passthrough], deployex_progress: &fixture_progress/0 do
+        {:ok, live, html} = live(conn, ~p"/hotupgrade")
 
-        filename = "deployex-3.0.0.tar.gz"
-        download_file(live, filename)
+        assert html =~ "Step 5 of 8: Resolving the runtime configuration"
+        refute has_element?(live, "#hotupgrade-progress-at")
 
-        live
-        |> element("#hotupgrade-apply-deployex", "Apply Hot Upgrade")
-        |> render_click()
+        assert has_element?(
+                 live,
+                 ~s([aria-label="Step 4, Done: Checking release can be installed"])
+               )
 
-        live
-        |> element("#danger-button-hotupgrade-execute", "Yes, Apply Hot Upgrade")
-        |> render_click()
+        assert has_element?(
+                 live,
+                 ~s([aria-label="Step 5, In progress: Resolving the runtime configuration"])
+               )
 
-        msg1 = "Step 1: Validating release"
-        msg2 = "Step 2: Backing up current version"
-        msg3 = "Step 3: Applying upgrade"
-        send(live.pid, {:hot_upgrade_progress, Node.self(), "deployex", msg1})
-        send(live.pid, {:hot_upgrade_progress, Node.self(), "deployex", msg2})
-        send(live.pid, {:hot_upgrade_progress, Node.self(), "deployex", msg3})
-
-        html = render(live)
-
-        assert_receive :upgrade_executed, 1_000
-        assert html =~ msg1
-        assert html =~ msg2
-        assert html =~ msg3
+        assert has_element?(
+                 live,
+                 ~s([aria-label="Step 6, Pending: Adding the runtime configuration to the relup"])
+               )
       end
     end
 
     @tag :capture_log
-    test "handles hot_upgrade_complete with success", %{conn: conn} do
-      test_pid = self()
-
+    test "follows each event from this host, and drops the ones from another host", %{
+      conn: conn
+    } do
       Deployer.HotUpgradeMock
       |> expect(:subscribe_events, fn -> :ok end)
 
-      check_data = create_check_data()
+      progress_fixture(run(:running, Enum.take(@announced, 2)))
 
-      with_mock Deployer.HotUpgrade, [:passthrough],
-        deployex_check: fn _path -> {:ok, check_data} end,
-        deployex_execute: fn _path, _opts ->
-          send(test_pid, :upgrade_executed)
-          :ok
-        end do
+      with_mock Deployer.HotUpgrade, [:passthrough], deployex_progress: &fixture_progress/0 do
         {:ok, live, _html} = live(conn, ~p"/hotupgrade")
+        assert render(live) =~ "Step 2 of 8: Unpacking release"
 
-        filename = "deployex-3.0.0.tar.gz"
-        download_file(live, filename)
-
-        live
-        |> element("#hotupgrade-apply-deployex", "Apply Hot Upgrade")
-        |> render_click()
-
-        live
-        |> element("#danger-button-hotupgrade-execute", "Yes, Apply Hot Upgrade")
-        |> render_click()
-
-        success_msg = "Upgrade completed successfully"
-        send(live.pid, {:hot_upgrade_complete, Node.self(), "deployex", :ok, success_msg})
-
-        html = render(live)
-        %{socket: socket} = :sys.get_state(live.pid)
-
-        assert_receive :upgrade_executed, 1_000
-        assert socket.assigns.upgrade_state == :success
-        assert html =~ "Hot upgrade completed successfully!"
-      end
-    end
-
-    @tag :capture_log
-    test "handles hot_upgrade_complete with error", %{conn: conn} do
-      test_pid = self()
-
-      Deployer.HotUpgradeMock
-      |> expect(:subscribe_events, fn -> :ok end)
-
-      check_data = create_check_data()
-
-      with_mock Deployer.HotUpgrade, [:passthrough],
-        deployex_check: fn _path -> {:ok, check_data} end,
-        deployex_execute: fn _path, _opts ->
-          send(test_pid, :upgrade_executed)
-          :ok
-        end do
-        {:ok, live, _html} = live(conn, ~p"/hotupgrade")
-
-        filename = "deployex-3.0.0.tar.gz"
-        download_file(live, filename)
-
-        live
-        |> element("#hotupgrade-apply-deployex", "Apply Hot Upgrade")
-        |> render_click()
-
-        live
-        |> element("#danger-button-hotupgrade-execute", "Yes, Apply Hot Upgrade")
-        |> render_click()
-
-        error_msg = "Upgrade failed: version mismatch"
-        send(live.pid, {:hot_upgrade_complete, Node.self(), "deployex", :error, error_msg})
-
-        html = render(live)
-        %{socket: socket} = :sys.get_state(live.pid)
-
-        assert_receive :upgrade_executed, 1_000
-        assert socket.assigns.upgrade_state == :error
-        assert html =~ "Hot upgrade failed!"
-      end
-    end
-
-    @tag :capture_log
-    test "ignores hot upgrade events from other nodes", %{conn: conn} do
-      test_pid = self()
-
-      Deployer.HotUpgradeMock
-      |> expect(:subscribe_events, fn -> :ok end)
-
-      check_data = create_check_data()
-
-      with_mock Deployer.HotUpgrade, [:passthrough],
-        deployex_check: fn _path -> {:ok, check_data} end,
-        deployex_execute: fn _path, _opts ->
-          send(test_pid, :upgrade_executed)
-          :ok
-        end do
-        {:ok, live, _html} = live(conn, ~p"/hotupgrade")
-
-        filename = "deployex-3.0.0.tar.gz"
-        download_file(live, filename)
-
-        live
-        |> element("#hotupgrade-apply-deployex", "Apply Hot Upgrade")
-        |> render_click()
-
-        live
-        |> element("#danger-button-hotupgrade-execute", "Yes, Apply Hot Upgrade")
-        |> render_click()
+        progress_fixture(run(:running, Enum.take(@announced, 3)))
 
         send(
           live.pid,
-          {:hot_upgrade_progress, :other_node@localhost, "test_app", "Should be ignored"}
+          {:hot_upgrade_progress, :other_node@localhost, "deployex", "Creating relup file"}
         )
 
-        %{socket: socket} = :sys.get_state(live.pid)
+        assert render(live) =~ "Step 2 of 8: Unpacking release"
 
-        assert_receive :upgrade_executed, 1_000
-
-        assert socket.assigns.upgrade_progress == []
+        send(live.pid, {:hot_upgrade_progress, Node.self(), "deployex", "Creating relup file"})
+        assert render(live) =~ "Step 3 of 8: Creating relup file"
       end
     end
 
     @tag :capture_log
-    test "ignores hot upgrade events when not applying upgrade", %{conn: conn} do
+    test "a success shows to the viewer who watched the run, and Done hides it", %{conn: conn} do
       Deployer.HotUpgradeMock
       |> expect(:subscribe_events, fn -> :ok end)
 
-      {:ok, live, _html} = live(conn, ~p"/hotupgrade")
+      progress_fixture(run(:running, Enum.take(@announced, 7)))
 
-      send(live.pid, {:hot_upgrade_progress, Node.self(), "test_app", "Should be ignored"})
-
-      %{socket: socket} = :sys.get_state(live.pid)
-
-      assert socket.assigns.upgrade_progress == []
-    end
-  end
-
-  describe "progress modal" do
-    @tag :capture_log
-    test "shows progress modal during upgrade", %{conn: conn} do
-      test_pid = self()
-
-      Deployer.HotUpgradeMock
-      |> expect(:subscribe_events, fn -> :ok end)
-
-      check_data = create_check_data()
-
-      with_mock Deployer.HotUpgrade, [:passthrough],
-        deployex_check: fn _path -> {:ok, check_data} end,
-        deployex_execute: fn _path, _opts ->
-          send(test_pid, :upgrade_executed)
-          :ok
-        end do
+      with_mock Deployer.HotUpgrade, [:passthrough], deployex_progress: &fixture_progress/0 do
         {:ok, live, _html} = live(conn, ~p"/hotupgrade")
 
-        filename = "deployex-3.0.0.tar.gz"
-        download_file(live, filename)
+        success = "Hot upgrade applied successfully, 1.0.0 -> 1.1.0"
+        progress_fixture(run(:success, @announced ++ [success]))
+        send(live.pid, {:hot_upgrade_complete, Node.self(), "deployex", :ok, success})
 
-        live
-        |> element("#hotupgrade-apply-deployex", "Apply Hot Upgrade")
-        |> render_click()
+        assert has_element?(live, ~s(#hotupgrade-progress [role="status"]), success)
+        leds = live |> element("#hotupgrade-progress-leds") |> render()
+        assert [_, _, _, _, _, _, _, _] = Regex.scan(~r/dx-led dx-led-done/, leds)
 
-        html =
-          live
-          |> element("#danger-button-hotupgrade-execute", "Yes, Apply Hot Upgrade")
-          |> render_click()
+        live |> element("#hotupgrade-progress-done", "Done") |> render_click()
 
-        assert html =~ "Hot Upgrade Progress"
-        assert html =~ "Upgrade Progress"
-        assert html =~ "Applying hot upgrade…"
+        refute has_element?(live, "#hotupgrade-progress")
       end
     end
 
     @tag :capture_log
-    test "hotupgrade-progress-done event resets state", %{conn: conn} do
-      test_pid = self()
+    test "a success from before the page opened stays hidden, a failure shows", %{conn: conn} do
+      Deployer.HotUpgradeMock
+      |> stub(:subscribe_events, fn -> :ok end)
 
+      progress_fixture(run(:success, @announced ++ ["Hot upgrade applied successfully"]))
+
+      with_mock Deployer.HotUpgrade, [:passthrough], deployex_progress: &fixture_progress/0 do
+        {:ok, live, _html} = live(conn, ~p"/hotupgrade")
+        refute has_element?(live, "#hotupgrade-progress")
+
+        failure = "Hot upgrade 1.0.0 -> 1.1.0 failed: {:error, :bad_relup}"
+
+        progress_fixture(%{
+          run(:error, Enum.take(@announced, 4) ++ [failure])
+          | updated_at: ~U[2026-11-10 09:30:00Z]
+        })
+
+        {:ok, live, _html} = live(conn, ~p"/hotupgrade")
+
+        assert has_element?(live, "#hotupgrade-progress-error", "Failed at step 4 of 8")
+        # A finished run shows when it ended, so an old failure does not read as current
+        ended_at = DeployexWeb.HostTime.format(~U[2026-11-10 09:30:00Z], "%Y-%m-%d %H:%M")
+        assert has_element?(live, "#hotupgrade-progress-at", ended_at)
+        assert has_element?(live, "#hotupgrade-progress-error", failure)
+
+        assert has_element?(
+                 live,
+                 ~s([aria-label="Step 4, Failed: Checking release can be installed"])
+               )
+      end
+    end
+
+    @tag :capture_log
+    test "hides the release once this host upgraded to it", %{conn: conn} do
       Deployer.HotUpgradeMock
       |> expect(:subscribe_events, fn -> :ok end)
 
       check_data = create_check_data()
+      progress_fixture(run(:running, Enum.take(@announced, 7)))
 
       with_mock Deployer.HotUpgrade, [:passthrough],
         deployex_check: fn _path -> {:ok, check_data} end,
-        deployex_execute: fn _path, _opts ->
-          send(test_pid, :upgrade_executed)
-          :ok
-        end do
+        deployex_progress: &fixture_progress/0 do
         {:ok, live, _html} = live(conn, ~p"/hotupgrade")
 
-        filename = "deployex-3.0.0.tar.gz"
-        download_file(live, filename)
+        download_file(live, "deployex-3.0.0.tar.gz")
+        assert has_element?(live, "#hotupgrade-release")
 
-        live
-        |> element("#hotupgrade-apply-deployex", "Apply Hot Upgrade")
-        |> render_click()
+        success = "Hot upgrade applied successfully, 1.0.0 -> 1.1.0"
+        progress_fixture(run(:success, @announced ++ [success]))
+        send(live.pid, {:hot_upgrade_complete, Node.self(), "deployex", :ok, success})
 
-        live
-        |> element("#danger-button-hotupgrade-execute", "Yes, Apply Hot Upgrade")
-        |> render_click()
+        refute has_element?(live, "#hotupgrade-release")
+        assert has_element?(live, "#upload-form")
+        assert has_element?(live, "#hotupgrade-progress")
+      end
+    end
 
-        success_msg = "Upgrade completed successfully"
-        send(live.pid, {:hot_upgrade_complete, Node.self(), "deployex", :ok, success_msg})
+    @tag :capture_log
+    test "Done on a run that this viewer did not start keeps the viewer's release", %{conn: conn} do
+      Deployer.HotUpgradeMock
+      |> expect(:subscribe_events, fn -> :ok end)
 
-        live
-        |> element("#done-button-hotupgrade-progress-done", "Done")
-        |> render_click()
+      check_data = create_check_data()
+      failure = "Hot upgrade 1.0.0 -> 1.1.0 failed: {:error, :bad_relup}"
+      progress_fixture(run(:error, Enum.take(@announced, 4) ++ [failure]))
 
-        %{socket: socket} = :sys.get_state(live.pid)
+      with_mock Deployer.HotUpgrade, [:passthrough],
+        deployex_check: fn _path -> {:ok, check_data} end,
+        deployex_progress: &fixture_progress/0 do
+        {:ok, live, _html} = live(conn, ~p"/hotupgrade")
 
-        assert_receive :upgrade_executed, 1_000
+        download_file(live, "deployex-3.0.0.tar.gz")
+        live |> element("#hotupgrade-progress-done", "Done") |> render_click()
 
-        assert socket.assigns.downloaded_release == nil
-        assert socket.assigns.applying_upgrade == false
-        assert socket.assigns.upgrade_state == :init
-        assert socket.assigns.upgrade_progress == []
+        refute has_element?(live, "#hotupgrade-progress")
+        assert has_element?(live, "#hotupgrade-apply-deployex")
+      end
+    end
+
+    @tag :capture_log
+    test "hides Apply while a run is in progress", %{conn: conn} do
+      Deployer.HotUpgradeMock
+      |> expect(:subscribe_events, fn -> :ok end)
+
+      check_data = create_check_data()
+      progress_fixture(run(:running, Enum.take(@announced, 3)))
+
+      with_mock Deployer.HotUpgrade, [:passthrough],
+        deployex_check: fn _path -> {:ok, check_data} end,
+        deployex_progress: &fixture_progress/0 do
+        {:ok, live, _html} = live(conn, ~p"/hotupgrade")
+
+        download_file(live, "deployex-3.0.0.tar.gz")
+
+        refute has_element?(live, "#hotupgrade-apply-deployex")
       end
     end
   end
@@ -601,6 +584,31 @@ defmodule DeployexWeb.HotUpgrade.UploadTest do
 
   # Helper functions
 
+  defp run(state, messages) do
+    %Deployer.HotUpgrade.Progress{
+      sname: "deployex",
+      from_version: "1.0.0",
+      to_version: "1.1.0",
+      state: state,
+      messages: messages
+    }
+  end
+
+  # A public table of the test, so the mocked deployex_progress/0 reads it from the LiveView process
+  defp progress_fixture(progress) do
+    if :ets.whereis(:hot_upgrade_progress_fixture) == :undefined,
+      do: :ets.new(:hot_upgrade_progress_fixture, [:public, :named_table])
+
+    :ets.insert(:hot_upgrade_progress_fixture, {:progress, progress})
+  end
+
+  defp fixture_progress do
+    case :ets.lookup(:hot_upgrade_progress_fixture, :progress) do
+      [{:progress, progress}] -> progress
+      [] -> nil
+    end
+  end
+
   defp create_check_data do
     %Deployer.HotUpgrade.Check{
       sname: "deployex",
@@ -609,8 +617,9 @@ defmodule DeployexWeb.HotUpgrade.UploadTest do
       download_path: "/tmp/deployex-1.0.0.tar.gz",
       current_path: "",
       new_path: "",
-      from_version: "1.0.0",
-      to_version: "1.1.0"
+      # Charlists, as Deployer.HotUpgrade.Application.do_check/1 returns them
+      from_version: ~c"1.0.0",
+      to_version: ~c"1.1.0"
     }
   end
 

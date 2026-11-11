@@ -62,12 +62,18 @@ defmodule DeployexWeb.Layouts do
     default: [],
     doc: "the bell items, from `DeployexWeb.RecentEvents`"
 
-  attr :socket, :any, default: nil, doc: "the page's socket, for the dock, a sticky LiveView"
+  attr :socket, :any,
+    default: nil,
+    doc: "the page's socket, for the dock and the upgrade row in the bell, both sticky LiveViews"
 
   slot :inner_block, required: true
 
   def app(assigns) do
-    assigns = assign(assigns, :nav_items, @nav_items)
+    # Read on each render, so the version changes with a hot upgrade of DeployEx
+    assigns =
+      assigns
+      |> assign(:nav_items, @nav_items)
+      |> assign(:version, to_string(Application.spec(:deployex_web, :vsn)))
 
     ~H"""
     <Shell.shell console="Agent Console" home={~p"/applications"}>
@@ -98,7 +104,11 @@ defmodule DeployexWeb.Layouts do
         </div>
       </:top_bar_status>
       <:top_bar_end>
-        <Bell.bell items={@recent_events} all_href="/logs/live?source=events" all_text="View logs" />
+        <Bell.bell items={@recent_events} all_href="/logs/live?source=events" all_text="View logs">
+          <:pinned :if={@socket}>
+            {live_render(@socket, DeployexWeb.UpgradeBellLive, id: "upgrade-bell-live", sticky: true)}
+          </:pinned>
+        </Bell.bell>
         <ThemeSwitch.theme_switch />
         <Menu.menu
           id="account-menu"
@@ -124,6 +134,10 @@ defmodule DeployexWeb.Layouts do
           <:icon><Icons.icon name={item.icon} stroke="1.6" /></:icon>
         </Shell.nav_item>
       </:sidebar>
+      <:sidebar_footer>
+        <span class="dx-side-foot-name">DeployEx</span>
+        <span id="sidebar-version" class="dx-mono">{@version}</span>
+      </:sidebar_footer>
       <:dock :if={@socket}>
         {live_render(@socket, DeployexWeb.DockLive,
           id: "dock-live",
