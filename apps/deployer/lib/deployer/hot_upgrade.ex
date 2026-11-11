@@ -8,6 +8,7 @@ defmodule Deployer.HotUpgrade do
   alias Deployer.HotUpgrade.Check
   alias Deployer.HotUpgrade.Deployex
   alias Deployer.HotUpgrade.Execute
+  alias Deployer.HotUpgrade.Progress
 
   ### ==========================================================================
   ### Hot upgrade functions for Managed applications
@@ -91,6 +92,25 @@ defmodule Deployer.HotUpgrade do
   @spec deployex_execute(download_path :: String.t(), options :: Keyword.t()) ::
           :ok | {:error, any()}
   def deployex_execute(download_path, options \\ []), do: Deployex.execute(download_path, options)
+
+  @doc """
+  Returns the DeployEx self-upgrade that runs now, or the last one since DeployEx started, nil when none
+  ran. It reads a local table, so a page can call it on every mount.
+
+  ## Examples
+
+      iex> Deployer.HotUpgrade.deployex_progress()
+      %Deployer.HotUpgrade.Progress{state: :running, messages: ["Starting upgrade for deployex..."]}
+  """
+  @spec deployex_progress() :: Progress.t() | nil
+  def deployex_progress, do: Deployex.progress()
+
+  @doc """
+  Subscribes the caller to the hot upgrade events, for a part of the page that shows the DeployEx
+  self-upgrade. Each event names its sname.
+  """
+  @spec deployex_subscribe() :: :ok
+  def deployex_subscribe, do: Deployex.subscribe()
 
   ### ==========================================================================
   ### Private functions

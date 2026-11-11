@@ -7,6 +7,7 @@ defmodule Deployer.HotUpgrade.Deployex do
   alias Deployer.HotUpgrade.Application, as: HotUpgradeApp
   alias Deployer.HotUpgrade.Check
   alias Deployer.HotUpgrade.Execute
+  alias Deployer.HotUpgrade.Progress
   alias Foundation.Catalog
   alias Host.Commander
 
@@ -107,6 +108,18 @@ defmodule Deployer.HotUpgrade.Deployex do
       end
     end
   end
+
+  @doc """
+  The self-upgrade that runs now, or the last one since DeployEx started, nil when none ran.
+  """
+  @spec progress() :: Progress.t() | nil
+  def progress, do: HotUpgradeApp.progress(@deployex_name)
+
+  @doc """
+  Subscribes the caller to the hot upgrade events. Each event names its sname.
+  """
+  @spec subscribe() :: :ok
+  def subscribe, do: HotUpgradeApp.subscribe_events()
 
   @doc """
   Record a version installed by a hot upgrade of DeployEx itself.

@@ -89,10 +89,13 @@ defmodule Deployer.HotUpgrade.Application do
   @behaviour Deployer.HotUpgrade.Adapter
   @events_topic "deployex::hotupgrade::events"
   @runtime_config_key {:deployex, :runtime_config}
+  # The run of each application, now or the last one, for a page that opens in the middle of it
+  @progress_table :deployer_hot_upgrade_progress
 
   alias Deployer.HotUpgrade.Check
   alias Deployer.HotUpgrade.Execute
   alias Deployer.HotUpgrade.Jellyfish
+  alias Deployer.HotUpgrade.Progress
   alias Foundation.Rpc
 
   @typedoc """
@@ -108,6 +111,8 @@ defmodule Deployer.HotUpgrade.Application do
   @impl GenServer
   def init(_args) do
     Logger.info("Initializing HotUpgrade server")
+
+    ensure_progress_table()
 
     {:ok, %{}}
   end
@@ -131,6 +136,8 @@ defmodule Deployer.HotUpgrade.Application do
 
   @impl GenServer
   def handle_info({:make_permanent, params}, state) do
+    :ok = notify_make_permanent(false, params)
+
     case permfy(%{params | make_permanent_async: false}) do
       :ok ->
         notify_complete_ok(params)
@@ -199,7 +206,8 @@ defmodule Deployer.HotUpgrade.Application do
   end
 
   def do_execute(%Execute{} = data) do
-    notify_progress(data.sname, "Starting upgrade for #{data.sname}...")
+    start_progress(data)
+    notify_progress(data, "Starting upgrade for #{data.sname}...")
 
     with {:ok, node} <- connect(data.node),
          :ok <- prepare_release(data) do
@@ -234,16 +242,16 @@ defmodule Deployer.HotUpgrade.Application do
   # touched. Failing at any of these steps leaves it running exactly the code it had, which
   # is what the caller is told through {:error, {:not_installed, reason}}, or through
   # {:error, {:unreachable, reason}} when the node is down or does not answer
-  defp prepare_release(%Execute{sname: sname} = data) do
-    with :ok <- notify_progress(sname, "Unpacking release"),
+  defp prepare_release(%Execute{} = data) do
+    with :ok <- notify_progress(data, "Unpacking release"),
          :ok <- unpack_release(data),
-         :ok <- notify_progress(sname, "Creating relup file"),
+         :ok <- notify_progress(data, "Creating relup file"),
          :ok <- make_relup(data),
-         :ok <- notify_progress(sname, "Checking release can be installed"),
+         :ok <- notify_progress(data, "Checking release can be installed"),
          :ok <- check_install_release(data),
-         :ok <- notify_progress(sname, "Resolving the runtime configuration"),
+         :ok <- notify_progress(data, "Resolving the runtime configuration"),
          {:ok, runtime_config} <- resolve_runtime_config(data),
-         :ok <- notify_progress(sname, "Adding the runtime configuration to the relup") do
+         :ok <- notify_progress(data, "Adding the runtime configuration to the relup") do
       install_runtime_config_hook(data, runtime_config)
     end
   end
@@ -251,9 +259,9 @@ defmodule Deployer.HotUpgrade.Application do
   # From install_release on the node is running the new code, so a failure has already
   # changed it and the previous version can no longer be assumed to be in place
   defp install(%Execute{from_version: from_version, to_version: to_version} = data, node) do
-    with :ok <- notify_progress(data.sname, "Installing release"),
+    with :ok <- notify_progress(data, "Installing release"),
          :ok <- install_release(data),
-         :ok <- notify_make_permanent(data.make_permanent_async, data.sname, data.to_version),
+         :ok <- notify_make_permanent(data.make_permanent_async, data),
          :ok <- permfy(data),
          :ok <- prune_old_releases(data),
          :ok <- notify_complete_ok(data.make_permanent_async, data) do
@@ -371,6 +379,20 @@ defmodule Deployer.HotUpgrade.Application do
 
   @impl Deployer.HotUpgrade.Adapter
   def subscribe_events, do: Phoenix.PubSub.subscribe(Deployer.PubSub, @events_topic)
+
+  @doc """
+  The hot upgrade that runs now for the application, or its last one since this node started, nil when none
+  ran. One run is kept per application, whatever instance it ran on.
+  """
+  @spec progress(name :: String.t()) :: Progress.t() | nil
+  def progress(name) do
+    with ref when ref != :undefined <- :ets.whereis(@progress_table),
+         [{^name, progress}] <- :ets.lookup(@progress_table, name) do
+      progress
+    else
+      _ -> nil
+    end
+  end
 
   @impl Deployer.HotUpgrade.Adapter
   def prepare_new_path(name, "erlang", to_version, new_path) do
@@ -984,20 +1006,16 @@ defmodule Deployer.HotUpgrade.Application do
   ### Private functions
   ### ==========================================================================
 
-  @spec notify_make_permanent(skip :: boolean(), sname :: String.t(), version :: String.t()) ::
-          :ok
-  defp notify_make_permanent(true, _sname, _version), do: :ok
+  @spec notify_make_permanent(skip :: boolean(), data :: Execute.t()) :: :ok
+  defp notify_make_permanent(true, _data), do: :ok
 
-  defp notify_make_permanent(false, sname, version) do
-    Phoenix.PubSub.broadcast(
-      Deployer.PubSub,
-      @events_topic,
-      {:hot_upgrade_progress, Node.self(), sname, "Making release #{version} permanent"}
-    )
-  end
+  defp notify_make_permanent(false, %Execute{to_version: version} = data),
+    do: notify_progress(data, "Making release #{version} permanent")
 
-  @spec notify_progress(sname :: String.t(), msg :: String.t()) :: :ok
-  defp notify_progress(sname, msg) do
+  @spec notify_progress(data :: Execute.t(), msg :: String.t()) :: :ok
+  defp notify_progress(%Execute{sname: sname} = data, msg) do
+    add_progress(data, msg, :running)
+
     Phoenix.PubSub.broadcast(
       Deployer.PubSub,
       @events_topic,
@@ -1022,6 +1040,8 @@ defmodule Deployer.HotUpgrade.Application do
   # The versions are on the message rather than only on the payload, so every notification
   # adapter reports them without having to know about this event
   defp notify_outcome(%Execute{sname: sname} = data, status, message) do
+    add_progress(data, message, if(status == :ok, do: :success, else: :error))
+
     Phoenix.PubSub.broadcast(
       Deployer.PubSub,
       @events_topic,
@@ -1199,5 +1219,40 @@ defmodule Deployer.HotUpgrade.Application do
       jellyfish_info ->
         {:ok, jellyfish_info}
     end
+  end
+
+  # The run is written before each broadcast, so a reader that gets the event finds the step in the table
+  defp start_progress(%Execute{name: name} = data) do
+    put_progress(name, %Progress{
+      sname: data.sname,
+      from_version: to_string(data.from_version),
+      to_version: to_string(data.to_version)
+    })
+  end
+
+  # A message with no run started is dropped, like the first one a version receives after a hot upgrade
+  # into it, since the previous version started that run
+  defp add_progress(%Execute{name: name}, message, state) do
+    case progress(name) do
+      %Progress{messages: messages} = progress ->
+        put_progress(name, %{progress | state: state, messages: messages ++ [message]})
+
+      nil ->
+        :ok
+    end
+  end
+
+  defp put_progress(name, %Progress{} = progress) do
+    ensure_progress_table()
+    true = :ets.insert(@progress_table, {name, %{progress | updated_at: DateTime.utc_now()}})
+    :ok
+  end
+
+  # A server that a hot upgrade brought to this version did not create the table in init/1
+  defp ensure_progress_table do
+    if :ets.whereis(@progress_table) == :undefined,
+      do: :ets.new(@progress_table, [:set, :protected, :named_table])
+
+    :ok
   end
 end
