@@ -8,6 +8,7 @@ defmodule Deployer.HotUpgrade.DeployexTest do
   alias Deployer.HotUpgrade.Application, as: HotUpgradeApp
   alias Deployer.HotUpgrade.Check
   alias Deployer.HotUpgrade.Deployex
+  alias Deployer.HotUpgrade.Progress
 
   setup :set_mox_global
   setup :verify_on_exit!
@@ -20,6 +21,56 @@ defmodule Deployer.HotUpgrade.DeployexTest do
       check: fn _check -> {:ok, %Check{deploy: :hot_upgrade}} end do
       assert {:ok, %Check{}} = Deployex.check("/tmp/deployex-1.0.0.tar.gz")
     end
+  end
+
+  describe "while a self-upgrade runs" do
+    setup do
+      put_progress_row(%Progress{
+        sname: "deployex",
+        state: :running,
+        messages: ["Installing release"]
+      })
+
+      on_exit(fn -> put_progress_row(nil) end)
+    end
+
+    test "check/1 and execute/2 refuse before they extract the release" do
+      log =
+        capture_log(fn ->
+          assert {:error, :in_progress} = Deployex.check("/tmp/deployex-1.0.0.tar.gz")
+
+          assert {:error, :in_progress} =
+                   Deployex.execute("/tmp/deployex-1.0.0.tar.gz", sync_execution: false)
+        end)
+
+      # Host.CommanderMock has no expectation, so an extraction would fail the test
+      assert log =~ "Hot upgrade refused for deployex, a hot upgrade is in progress"
+    end
+
+    test "the server refuses a check that reached it, for example one queued behind the run" do
+      log =
+        capture_log(fn ->
+          assert {:error, :in_progress} =
+                   HotUpgradeApp.check(%Check{
+                     name: "deployex",
+                     sname: "deployex",
+                     language: "elixir"
+                   })
+        end)
+
+      assert log =~ "Hot upgrade refused for deployex, a hot upgrade is in progress"
+    end
+  end
+
+  # Writes the DeployEx row of the progress table from inside the server, which owns it
+  defp put_progress_row(progress) do
+    :sys.replace_state(HotUpgradeApp, fn state ->
+      if progress,
+        do: :ets.insert(:deployer_hot_upgrade_progress, {"deployex", progress}),
+        else: :ets.delete(:deployer_hot_upgrade_progress, "deployex")
+
+      state
+    end)
   end
 
   test "check/1 refuses a release built for a different OTP" do

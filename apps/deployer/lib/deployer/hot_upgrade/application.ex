@@ -118,8 +118,13 @@ defmodule Deployer.HotUpgrade.Application do
   end
 
   @impl GenServer
-  def handle_call({:check, params}, _from, state) do
-    response = do_check(params)
+  def handle_call({:check, %Check{name: name} = params}, _from, state) do
+    # A check that waited here behind a run would delete the release directory it has still to make permanent
+    response =
+      with :ok <- ensure_not_running(name) do
+        do_check(params)
+      end
+
     {:reply, response, state}
   end
 
@@ -391,6 +396,19 @@ defmodule Deployer.HotUpgrade.Application do
       progress
     else
       _ -> nil
+    end
+  end
+
+  @doc """
+  Refuses a hot upgrade of the application while one runs.
+  """
+  @spec ensure_not_running(name :: String.t()) :: :ok | {:error, :in_progress}
+  def ensure_not_running(name) do
+    if Progress.running?(progress(name)) do
+      Logger.warning("Hot upgrade refused for #{name}, a hot upgrade is in progress")
+      {:error, :in_progress}
+    else
+      :ok
     end
   end
 

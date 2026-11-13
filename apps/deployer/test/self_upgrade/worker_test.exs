@@ -1,7 +1,11 @@
 defmodule Deployer.SelfUpgrade.WorkerTest do
   use ExUnit.Case, async: false
   import Mox
+  import Mock
+  import ExUnit.CaptureLog
 
+  alias Deployer.HotUpgrade.Deployex
+  alias Deployer.HotUpgrade.Progress
   alias Deployer.SelfUpgrade.Worker
 
   # The upgrade runs in a Task (a separate process), so the mocks must be callable
@@ -13,6 +17,20 @@ defmodule Deployer.SelfUpgrade.WorkerTest do
 
   # The worker runs the built command with System.cmd, so the tests hand it a real shell.
   defp sh(script), do: {:ok, {"sh", ["-c", script], [stderr_to_stdout: true]}}
+
+  defp wait_until_idle(pid, tries \\ 50) do
+    cond do
+      is_nil(:sys.get_state(pid).task) ->
+        :ok
+
+      tries == 0 ->
+        flunk("the upgrade task did not finish")
+
+      true ->
+        Process.sleep(20)
+        wait_until_idle(pid, tries - 1)
+    end
+  end
 
   defp start(opts \\ [interval_ms: :never]) do
     start_supervised!({Task.Supervisor, name: Deployer.SelfUpgrade.TaskSupervisor})
@@ -49,6 +67,56 @@ defmodule Deployer.SelfUpgrade.WorkerTest do
 
     assert :started = Worker.reconcile(pid)
     assert :in_progress = Worker.reconcile(pid)
+  end
+
+  test "a self-upgrade from the dashboard is in progress, so the tick waits and latches nothing" do
+    pid = start()
+
+    with_mock Deployex, [:passthrough], progress: fn -> %Progress{state: :running} end do
+      assert :in_progress = Worker.reconcile(pid)
+    end
+
+    expect(Deployer.SelfUpgrade.SourceMock, :desired_version, fn -> {:ok, "99.0.0"} end)
+
+    expect(Deployer.SelfUpgrade.ExecutorMock, :hot_upgrade_command, fn "99.0.0" ->
+      sh("exit 0")
+    end)
+
+    assert :started = Worker.reconcile(pid)
+  end
+
+  test "a run that starts after the tick refuses this one, and the version is not latched" do
+    key = {__MODULE__, :other_run}
+    on_exit(fn -> :persistent_term.erase(key) end)
+    pid = start()
+
+    with_mock Deployex, [:passthrough],
+      progress: fn -> if :persistent_term.get(key, false), do: %Progress{state: :running} end do
+      expect(Deployer.SelfUpgrade.SourceMock, :desired_version, 2, fn -> {:ok, "99.0.0"} end)
+
+      # The other run starts while deployex.sh downloads, and its check refuses this one
+      expect(Deployer.SelfUpgrade.ExecutorMock, :hot_upgrade_command, fn "99.0.0" ->
+        :persistent_term.put(key, true)
+        sh("echo refused by the run; exit 1")
+      end)
+
+      log =
+        capture_log(fn ->
+          assert :started = Worker.reconcile(pid)
+          wait_until_idle(pid)
+        end)
+
+      assert log =~ "another hot upgrade is in progress, the next tick tries 99.0.0 again"
+      assert log =~ "refused by the run"
+
+      :persistent_term.put(key, false)
+
+      expect(Deployer.SelfUpgrade.ExecutorMock, :hot_upgrade_command, fn "99.0.0" ->
+        sh("exit 0")
+      end)
+
+      assert :started = Worker.reconcile(pid)
+    end
   end
 
   test "a stuck upgrade is stopped by the backstop timeout" do

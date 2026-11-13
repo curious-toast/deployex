@@ -20,4 +20,9 @@ defmodule Deployer.HotUpgrade.Progress do
             state: :running,
             messages: [],
             updated_at: nil
+
+  @doc "True while the run has not ended"
+  @spec running?(t() | nil) :: boolean()
+  def running?(%__MODULE__{state: :running}), do: true
+  def running?(_progress), do: false
 end

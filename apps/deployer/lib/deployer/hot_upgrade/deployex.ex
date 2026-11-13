@@ -17,7 +17,9 @@ defmodule Deployer.HotUpgrade.Deployex do
 
   @spec check(download_path :: String.t()) :: {:ok, Check.t()} | {:error, any()}
   def check(download_path) do
-    with {:ok, to_version} <- parse_version(download_path) do
+    # The server refuses too, this refusal only spares the caller the wait behind a run
+    with :ok <- HotUpgradeApp.ensure_not_running(@deployex_name),
+         {:ok, to_version} <- parse_version(download_path) do
       check_release(download_path, to_version)
     end
   end
@@ -58,6 +60,9 @@ defmodule Deployer.HotUpgrade.Deployex do
 
       {:error, {:otp_mismatch, _versions} = reason} ->
         {:error, reason}
+
+      {:error, :in_progress} = refused ->
+        refused
 
       reason ->
         Logger.warning(
