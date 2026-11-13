@@ -46,6 +46,17 @@ defmodule DeployexWeb.Helper do
   def format_bytes(bytes), do: "#{Float.round(bytes / 1_073_741_824, 2)} GB"
 
   @doc """
+  The running DeployEx version. Read it on each use, so it changes with a hot upgrade of DeployEx
+
+  ## Examples
+
+    iex> alias DeployexWeb.Helper
+    ...> assert Helper.deployex_version() == to_string(Application.spec(:deployex_web, :vsn))
+  """
+  @spec deployex_version() :: String.t()
+  def deployex_version, do: to_string(Application.spec(:deployex_web, :vsn))
+
+  @doc """
   Format error to human readable string
 
   ## Examples

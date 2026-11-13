@@ -10,6 +10,7 @@ defmodule DeployexWeb.Layouts do
   """
   use DeployexWeb, :html
 
+  alias DeployexWeb.Helper
   alias DeployexWeb.HostInfo
   alias DeployexWeb.UI.Bell
   alias DeployexWeb.UI.Icons
@@ -73,7 +74,7 @@ defmodule DeployexWeb.Layouts do
     assigns =
       assigns
       |> assign(:nav_items, @nav_items)
-      |> assign(:version, to_string(Application.spec(:deployex_web, :vsn)))
+      |> assign(:version, Helper.deployex_version())
 
     ~H"""
     <Shell.shell console="Agent Console" home={~p"/applications"}>

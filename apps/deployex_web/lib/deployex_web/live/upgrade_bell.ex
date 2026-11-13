@@ -8,7 +8,10 @@ defmodule DeployexWeb.UpgradeBellLive do
   """
   use DeployexWeb, :live_view
 
+  import DeployexWeb.HotUpgrade.Events, only: [from_this_host?: 1]
+
   alias Deployer.HotUpgrade
+  alias Deployer.HotUpgrade.Progress
   alias DeployexWeb.HotUpgrade.Steps
   alias DeployexWeb.UI.Icons
   alias DeployexWeb.UI.StepLeds
@@ -24,7 +27,7 @@ defmodule DeployexWeb.UpgradeBellLive do
   def render(assigns) do
     ~H"""
     <.link
-      :if={match?(%{state: :running}, @progress)}
+      :if={Progress.running?(@progress)}
       id="upgrade-bell-run"
       navigate={~p"/hotupgrade"}
       class="dx-nitem dx-nitem-run"
@@ -42,16 +45,9 @@ defmodule DeployexWeb.UpgradeBellLive do
     """
   end
 
-  # Connected DeployEx peers share the PubSub, so an event from another host is dropped. The table holds the
-  # run, so any event from this host is a reason to read it again
   @impl true
-  def handle_info({:hot_upgrade_progress, source_node, _sname, _message}, socket)
-      when source_node == node(),
-      do: {:noreply, assign(socket, :progress, HotUpgrade.deployex_progress())}
-
-  def handle_info({:hot_upgrade_complete, source_node, _sname, _status, _message}, socket)
-      when source_node == node(),
-      do: {:noreply, assign(socket, :progress, HotUpgrade.deployex_progress())}
+  def handle_info(event, socket) when from_this_host?(event),
+    do: {:noreply, assign(socket, :progress, HotUpgrade.deployex_progress())}
 
   def handle_info(_message, socket), do: {:noreply, socket}
 end
