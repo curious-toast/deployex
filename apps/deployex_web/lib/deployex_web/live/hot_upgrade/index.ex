@@ -3,6 +3,8 @@ defmodule DeployexWeb.HotUpgradeLive do
 
   require Logger
 
+  import DeployexWeb.HotUpgrade.Events, only: [from_this_host?: 1]
+
   alias Deployer.Github
   alias Deployer.HotUpgrade
   alias Deployer.HotUpgrade.Progress
@@ -36,7 +38,7 @@ defmodule DeployexWeb.HotUpgradeLive do
             </p>
           </div>
           <div
-            :if={is_nil(@downloaded_release)}
+            :if={can_load?(@downloaded_release, @progress)}
             class="dx-seg2"
             role="group"
             aria-label="Release source"
@@ -145,7 +147,10 @@ defmodule DeployexWeb.HotUpgradeLive do
         </section>
 
         <section
-          :if={@upload_method == :file and is_nil(@downloaded_release)}
+          :if={
+            @upload_method == :file and
+              (can_load?(@downloaded_release, @progress) or uploading?(@uploads.hotupgrade))
+          }
           class="dx-card p-5"
           aria-labelledby="hotupgrade-upload"
         >
@@ -199,7 +204,7 @@ defmodule DeployexWeb.HotUpgradeLive do
         </section>
 
         <section
-          :if={@upload_method == :github and is_nil(@downloaded_release)}
+          :if={@upload_method == :github and can_load?(@downloaded_release, @progress)}
           class="dx-card p-5"
           aria-labelledby="hotupgrade-github"
         >
@@ -385,9 +390,16 @@ defmodule DeployexWeb.HotUpgradeLive do
             :if={!asking_apply?(@live_action, @downloaded_release, @progress)}
             class="mt-4 flex justify-end gap-2"
           >
-            <button type="button" phx-click="remove-release" class="dx-btn">Remove</button>
+            <button
+              :if={!Progress.running?(@progress)}
+              type="button"
+              phx-click="remove-release"
+              class="dx-btn"
+            >
+              Remove
+            </button>
             <.link
-              :if={!@downloaded_release.error and !running?(@progress)}
+              :if={!@downloaded_release.error and !Progress.running?(@progress)}
               id={Helper.normalize_id("hotupgrade-apply-#{@downloaded_release.name}")}
               class="dx-btn dx-btn-primary"
               patch={~p"/hotupgrade/apply"}
@@ -401,6 +413,9 @@ defmodule DeployexWeb.HotUpgradeLive do
             class="dx-ask dx-ask-warn -mx-5 mt-5 -mb-5"
             role="group"
             aria-label="Confirm the hot upgrade"
+            phx-window-keydown="cancel-apply"
+            phx-key="Escape"
+            phx-mounted={JS.focus(to: "#hotupgrade-cancel")}
           >
             <span class="flex-[1_1_360px] text-base">
               <b>Apply the hot upgrade to {@downloaded_release.to_version}?</b>
@@ -414,6 +429,7 @@ defmodule DeployexWeb.HotUpgradeLive do
               type="button"
               class="dx-btn dx-btn-danger"
               phx-click="hotupgrade-execute"
+              phx-disable-with="Applying..."
             >
               Apply hot upgrade
             </button>
@@ -519,10 +535,12 @@ defmodule DeployexWeb.HotUpgradeLive do
   # A viewer who saw the run running also sees its success. Anyone sees a run that runs or failed
   # A loaded release that this host just upgraded to is cleared, so the upload box shows again
   defp assign_progress(socket, progress) do
+    previous = Map.get(socket.assigns, :progress)
+
     socket
     |> assign(:progress, progress)
-    |> assign(:watched, Map.get(socket.assigns, :watched, false) or running?(progress))
-    |> update(:downloaded_release, &if(applied?(progress, &1), do: nil, else: &1))
+    |> assign(:watched, Map.get(socket.assigns, :watched, false) or Progress.running?(progress))
+    |> update(:downloaded_release, &if(applied?(previous, progress, &1), do: nil, else: &1))
   end
 
   defp show_progress?(nil, _dismissed, _watched), do: false
@@ -530,17 +548,25 @@ defmodule DeployexWeb.HotUpgradeLive do
   defp show_progress?(%Progress{state: :success}, _dismissed, watched), do: watched
   defp show_progress?(%Progress{}, _dismissed, _watched), do: true
 
-  defp running?(progress), do: match?(%Progress{state: :running}, progress)
+  # The deployer refuses a release during a run, so the page offers no way to load one
+  defp can_load?(release, progress), do: is_nil(release) and not Progress.running?(progress)
+
+  # An upload in flight keeps its form, since the browser sends its progress through it
+  defp uploading?(upload), do: Enum.any?(upload.entries, &(not &1.done?))
 
   defp asking_apply?(action, release, progress),
-    do: action == :apply and is_nil(release.error) and not running?(progress)
+    do: action == :apply and is_nil(release.error) and not Progress.running?(progress)
 
-  # A release that this host just upgraded to has nothing left to apply
+  # A release that this host upgraded to while the page watched the run has nothing left to apply
   # The check gives the release versions as charlists
-  defp applied?(%Progress{state: :success, to_version: version}, %{to_version: to_version}),
-    do: version == to_string(to_version)
+  defp applied?(
+         %Progress{state: :running},
+         %Progress{state: :success, to_version: version},
+         %{to_version: to_version}
+       ),
+       do: version == to_string(to_version)
 
-  defp applied?(_progress, _release), do: false
+  defp applied?(_previous, _progress, _release), do: false
 
   defp github_new(id \\ nil, status \\ nil) do
     %{
@@ -637,6 +663,19 @@ defmodule DeployexWeb.HotUpgradeLive do
      |> push_patch(to: ~p"/hotupgrade")}
   end
 
+  def handle_event("cancel-apply", _params, socket) do
+    {:noreply, push_patch(socket, to: ~p"/hotupgrade")}
+  end
+
+  # A second click before the run writes its first step would check the release again, and that check
+  # deletes the release directory that the run has still to make permanent
+  def handle_event(
+        "hotupgrade-execute",
+        _params,
+        %{assigns: %{progress: %Progress{state: :running}}} = socket
+      ),
+      do: {:noreply, socket}
+
   # The check runs here, before the upgrade starts in the background, so a refused release is
   # reported at once. A started one shows its first step until the first event replaces it
   def handle_event(
@@ -662,22 +701,16 @@ defmodule DeployexWeb.HotUpgradeLive do
     end
   end
 
-  # Every viewer follows the run, whatever started it. The table holds the run, so an event from this
-  # host is a reason to read it again
+  # Every viewer follows the run, whatever started it. A run closes an open confirm, since the release card
+  # it confirms can be out of date after the run
   @impl true
-  def handle_info(
-        {:hot_upgrade_progress, source_node, _sname, _message},
-        %{assigns: %{node: node}} = socket
-      )
-      when source_node == node,
-      do: {:noreply, assign_progress(socket, HotUpgrade.deployex_progress())}
+  def handle_info(event, socket) when from_this_host?(event) do
+    socket = assign_progress(socket, HotUpgrade.deployex_progress())
 
-  def handle_info(
-        {:hot_upgrade_complete, source_node, _sname, _status, _message},
-        %{assigns: %{node: node}} = socket
-      )
-      when source_node == node,
-      do: {:noreply, assign_progress(socket, HotUpgrade.deployex_progress())}
+    if socket.assigns.live_action == :apply and Progress.running?(socket.assigns.progress),
+      do: {:noreply, push_patch(socket, to: ~p"/hotupgrade")},
+      else: {:noreply, socket}
+  end
 
   def handle_info(
         {:github_download_artifact, source_node,
@@ -773,5 +806,6 @@ defmodule DeployexWeb.HotUpgradeLive do
     do: "wrong OTP, this installation runs OTP #{otp}"
 
   defp refusal(:invalid_release_file), do: "not a deployex release"
+  defp refusal(:in_progress), do: "another hot upgrade was running"
   defp refusal(_reason), do: "invalid release"
 end

@@ -217,6 +217,8 @@ defmodule DeployexWeb.HotUpgrade.UploadTest do
 
         assert html =~ "not a deployex release"
         refute html =~ "Apply Hot Upgrade"
+        # The release card takes the upload box's place, also for a refused release
+        refute has_element?(live, "#upload-form")
       end
     end
   end
@@ -352,6 +354,176 @@ defmodule DeployexWeb.HotUpgrade.UploadTest do
     end
   end
 
+  describe "review of the inline flow" do
+    @tag :capture_log
+    test "a second Apply while the first one starts runs no second upgrade", %{conn: conn} do
+      test_pid = self()
+
+      Deployer.HotUpgradeMock
+      |> expect(:subscribe_events, fn -> :ok end)
+
+      check_data = create_check_data()
+
+      with_mock Deployer.HotUpgrade, [:passthrough],
+        deployex_check: fn _path -> {:ok, check_data} end,
+        deployex_progress: fn -> nil end,
+        deployex_execute: fn _path, _opts ->
+          send(test_pid, :upgrade_executed)
+          :ok
+        end do
+        {:ok, live, _html} = live(conn, ~p"/hotupgrade")
+
+        download_file(live, "deployex-3.0.0.tar.gz")
+        live |> element("#hotupgrade-apply-deployex", "Apply Hot Upgrade") |> render_click()
+
+        # A double click sends the event twice before the page renders again
+        render_click(live, "hotupgrade-execute", %{})
+        render_click(live, "hotupgrade-execute", %{})
+
+        assert_receive :upgrade_executed, 1_000
+        refute_receive :upgrade_executed, 200
+      end
+    end
+
+    @tag :capture_log
+    test "while a run is in progress, the page offers no upload, no Remove and no Apply", %{
+      conn: conn
+    } do
+      Deployer.HotUpgradeMock
+      |> expect(:subscribe_events, fn -> :ok end)
+
+      check_data = create_check_data()
+      progress_fixture(nil)
+
+      with_mock Deployer.HotUpgrade, [:passthrough],
+        deployex_check: fn _path -> {:ok, check_data} end,
+        deployex_progress: &fixture_progress/0 do
+        {:ok, live, _html} = live(conn, ~p"/hotupgrade")
+
+        download_file(live, "deployex-3.0.0.tar.gz")
+        assert has_element?(live, "button", "Remove")
+
+        # A run that another tab or deployex.sh started
+        progress_fixture(run(:running, Enum.take(@announced, 2)))
+        send(live.pid, {:hot_upgrade_progress, Node.self(), "deployex", "Unpacking release"})
+
+        refute has_element?(live, "button", "Remove")
+        refute has_element?(live, "#hotupgrade-apply-deployex")
+        refute has_element?(live, "#upload-form")
+        refute has_element?(live, "#hotupgrade-source-file")
+      end
+    end
+
+    @tag :capture_log
+    test "with no release loaded, a run hides the upload, the GitHub form and the source toggle",
+         %{
+           conn: conn
+         } do
+      Deployer.HotUpgradeMock
+      |> expect(:subscribe_events, fn -> :ok end)
+
+      progress_fixture(nil)
+
+      with_mock Deployer.HotUpgrade, [:passthrough], deployex_progress: &fixture_progress/0 do
+        {:ok, live, _html} = live(conn, ~p"/hotupgrade")
+
+        assert has_element?(live, "#upload-form")
+        live |> element("#hotupgrade-source-github") |> render_click()
+        assert has_element?(live, "#github-download-form")
+
+        progress_fixture(run(:running, Enum.take(@announced, 2)))
+        send(live.pid, {:hot_upgrade_progress, Node.self(), "deployex", "Unpacking release"})
+
+        refute has_element?(live, "#github-download-form")
+        refute has_element?(live, "#upload-form")
+        refute has_element?(live, "#hotupgrade-source-file")
+        refute has_element?(live, "#hotupgrade-source-github")
+      end
+    end
+
+    @tag :capture_log
+    test "a run that starts while the confirm is open closes it", %{conn: conn} do
+      Deployer.HotUpgradeMock
+      |> expect(:subscribe_events, fn -> :ok end)
+
+      check_data = create_check_data()
+      progress_fixture(nil)
+
+      with_mock Deployer.HotUpgrade, [:passthrough],
+        deployex_check: fn _path -> {:ok, check_data} end,
+        deployex_progress: &fixture_progress/0 do
+        {:ok, live, _html} = live(conn, ~p"/hotupgrade")
+
+        download_file(live, "deployex-3.0.0.tar.gz")
+        live |> element("#hotupgrade-apply-deployex", "Apply Hot Upgrade") |> render_click()
+        assert has_element?(live, "#hotupgrade-ask")
+
+        # A run from deployex.sh or another tab
+        progress_fixture(run(:running, Enum.take(@announced, 2)))
+        send(live.pid, {:hot_upgrade_progress, Node.self(), "deployex", "Unpacking release"})
+        assert_patch(live, ~p"/hotupgrade")
+
+        failure = "Hot upgrade 1.0.0 -> 1.1.0 failed: {:error, :bad_relup}"
+        progress_fixture(run(:error, Enum.take(@announced, 2) ++ [failure]))
+        send(live.pid, {:hot_upgrade_complete, Node.self(), "deployex", :error, failure})
+
+        refute has_element?(live, "#hotupgrade-ask")
+        assert has_element?(live, "#hotupgrade-apply-deployex")
+      end
+    end
+
+    @tag :capture_log
+    test "an older success to the same version does not clear a new upload", %{conn: conn} do
+      Deployer.HotUpgradeMock
+      |> expect(:subscribe_events, fn -> :ok end)
+
+      check_data = create_check_data()
+      progress_fixture(run(:success, @announced ++ ["Hot upgrade applied successfully"]))
+
+      with_mock Deployer.HotUpgrade, [:passthrough],
+        deployex_check: fn _path -> {:ok, check_data} end,
+        deployex_progress: &fixture_progress/0 do
+        {:ok, live, _html} = live(conn, ~p"/hotupgrade")
+
+        download_file(live, "deployex-3.0.0.tar.gz")
+        assert has_element?(live, "#hotupgrade-release")
+
+        # Any hot upgrade event from this host, like a monitored application's
+        send(live.pid, {:hot_upgrade_progress, Node.self(), "myelixir-abc", "Unpacking release"})
+
+        assert has_element?(live, "#hotupgrade-release")
+      end
+    end
+
+    @tag :capture_log
+    test "Escape closes the confirm, which moves the focus to Cancel when it opens", %{
+      conn: conn
+    } do
+      Deployer.HotUpgradeMock
+      |> expect(:subscribe_events, fn -> :ok end)
+
+      check_data = create_check_data()
+
+      with_mock Deployer.HotUpgrade, [:passthrough],
+        deployex_check: fn _path -> {:ok, check_data} end,
+        deployex_progress: fn -> nil end do
+        {:ok, live, _html} = live(conn, ~p"/hotupgrade")
+
+        download_file(live, "deployex-3.0.0.tar.gz")
+        live |> element("#hotupgrade-apply-deployex", "Apply Hot Upgrade") |> render_click()
+
+        assert has_element?(live, ~s(#hotupgrade-ask[phx-mounted]))
+        # LiveViewTest sends any key, so only the binding keeps Tab from closing the confirm
+        assert has_element?(live, ~s(#hotupgrade-ask[phx-key="Escape"]))
+
+        live |> element("#hotupgrade-ask") |> render_keydown(%{"key" => "Escape"})
+
+        assert_patch(live, ~p"/hotupgrade")
+        refute has_element?(live, "#hotupgrade-ask")
+      end
+    end
+  end
+
   describe "hot upgrade progress" do
     @tag :capture_log
     test "shows a run that started elsewhere, like deployex.sh, when the page opens", %{
@@ -479,7 +651,7 @@ defmodule DeployexWeb.HotUpgrade.UploadTest do
       |> expect(:subscribe_events, fn -> :ok end)
 
       check_data = create_check_data()
-      progress_fixture(run(:running, Enum.take(@announced, 7)))
+      progress_fixture(nil)
 
       with_mock Deployer.HotUpgrade, [:passthrough],
         deployex_check: fn _path -> {:ok, check_data} end,
@@ -488,6 +660,15 @@ defmodule DeployexWeb.HotUpgrade.UploadTest do
 
         download_file(live, "deployex-3.0.0.tar.gz")
         assert has_element?(live, "#hotupgrade-release")
+
+        progress_fixture(run(:running, Enum.take(@announced, 7)))
+
+        send(
+          live.pid,
+          {:hot_upgrade_progress, Node.self(), "deployex", "Making release 1.1.0 permanent"}
+        )
+
+        assert has_element?(live, "#hotupgrade-progress-leds")
 
         success = "Hot upgrade applied successfully, 1.0.0 -> 1.1.0"
         progress_fixture(run(:success, @announced ++ [success]))
@@ -522,21 +703,45 @@ defmodule DeployexWeb.HotUpgrade.UploadTest do
     end
 
     @tag :capture_log
-    test "hides Apply while a run is in progress", %{conn: conn} do
+    test "an upload in flight when a run starts keeps its form and ends with the refusal", %{
+      conn: conn
+    } do
       Deployer.HotUpgradeMock
       |> expect(:subscribe_events, fn -> :ok end)
 
-      check_data = create_check_data()
-      progress_fixture(run(:running, Enum.take(@announced, 3)))
+      progress_fixture(nil)
 
       with_mock Deployer.HotUpgrade, [:passthrough],
-        deployex_check: fn _path -> {:ok, check_data} end,
+        deployex_check: fn _path -> {:error, :in_progress} end,
         deployex_progress: &fixture_progress/0 do
         {:ok, live, _html} = live(conn, ~p"/hotupgrade")
 
-        download_file(live, "deployex-3.0.0.tar.gz")
+        content = :binary.copy(<<0>>, 100)
+
+        upload =
+          file_input(live, "#upload-form", :hotupgrade, [
+            %{name: "deployex-3.0.0.tar.gz", content: content, size: byte_size(content)}
+          ])
+
+        render_upload(upload, "deployex-3.0.0.tar.gz", 50)
+
+        progress_fixture(run(:running, Enum.take(@announced, 3)))
+        send(live.pid, {:hot_upgrade_progress, Node.self(), "deployex", "Creating relup file"})
+
+        # The browser sends the rest of the upload through the form, so it stays
+        assert has_element?(live, "#upload-form")
+        refute has_element?(live, "#hotupgrade-source-file")
+
+        render_upload(upload, "deployex-3.0.0.tar.gz", 50)
+
+        assert has_element?(
+                 live,
+                 ~s(section[aria-labelledby="hotupgrade-release"] dd),
+                 "another hot upgrade was running"
+               )
 
         refute has_element?(live, "#hotupgrade-apply-deployex")
+        refute has_element?(live, "#upload-form")
       end
     end
   end
