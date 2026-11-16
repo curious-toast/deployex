@@ -93,7 +93,7 @@ jobs:
           mix release
 
       - name: "Upload release file artifact"
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.BASENAME }}-${{ inputs.target_version }}.tar.gz
           path: _build/prod/${{ env.BASENAME }}-${{ inputs.target_version }}.tar.gz
