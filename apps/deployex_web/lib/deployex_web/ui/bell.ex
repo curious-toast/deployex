@@ -29,6 +29,10 @@ defmodule DeployexWeb.UI.Bell do
   attr :all_href, :string, required: true, doc: "the footer link"
   attr :all_text, :string, required: true
 
+  slot :pinned,
+    doc:
+      "a live row above the events, like a run in progress. A `.dx-nitem-run` in it puts a dot on the bell"
+
   def bell(assigns) do
     assigns = assign(assigns, tones: @tones, zone: HostTime.zone())
 
@@ -45,11 +49,13 @@ defmodule DeployexWeb.UI.Bell do
         <:button>
           <Icons.icon name="bell" />
           <span class="dx-nbadge hidden" aria-hidden="true" data-bell-badge></span>
+          <span class="dx-nrun" aria-hidden="true"></span>
         </:button>
         <div class="mb-1 flex items-center justify-between gap-2 border-b border-(--dx-base-300) px-2 pt-1.5 pb-2">
           <b class="text-sm">Notifications</b>
           <button type="button" class="dx-nlink hidden" data-bell-clear>Clear all</button>
         </div>
+        {render_slot(@pinned)}
         <p class={["dx-muted px-2.5 py-3 text-[0.8125rem]", @items != [] && "hidden"]} data-bell-empty>
           {if @items == [], do: "No events yet.", else: "No new notifications."}
         </p>

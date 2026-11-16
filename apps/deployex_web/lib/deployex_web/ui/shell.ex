@@ -24,6 +24,7 @@ defmodule DeployexWeb.UI.Shell do
     doc: "the right of the top bar, for notifications, the theme switch and the account menu"
 
   slot :sidebar, required: true, doc: "the navigation, as `nav_item/1` entries"
+  slot :sidebar_footer, doc: "the bottom of the sidebar, under the navigation"
   slot :dock, doc: "a panel fixed to the bottom of the page"
   slot :inner_block, required: true
 
@@ -88,6 +89,7 @@ defmodule DeployexWeb.UI.Shell do
             <nav aria-label="DeployEx" class="flex flex-col gap-0.5 p-2.5">
               {render_slot(@sidebar)}
             </nav>
+            <div :if={@sidebar_footer != []} class="dx-side-foot">{render_slot(@sidebar_footer)}</div>
           </aside>
         </div>
         <div class="drawer-content flex min-w-0 flex-col">

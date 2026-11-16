@@ -7,6 +7,7 @@ defmodule Deployer.HotUpgrade.Deployex do
   alias Deployer.HotUpgrade.Application, as: HotUpgradeApp
   alias Deployer.HotUpgrade.Check
   alias Deployer.HotUpgrade.Execute
+  alias Deployer.HotUpgrade.Progress
   alias Foundation.Catalog
   alias Host.Commander
 
@@ -16,7 +17,9 @@ defmodule Deployer.HotUpgrade.Deployex do
 
   @spec check(download_path :: String.t()) :: {:ok, Check.t()} | {:error, any()}
   def check(download_path) do
-    with {:ok, to_version} <- parse_version(download_path) do
+    # The server refuses too, this refusal only spares the caller the wait behind a run
+    with :ok <- HotUpgradeApp.ensure_not_running(@deployex_name),
+         {:ok, to_version} <- parse_version(download_path) do
       check_release(download_path, to_version)
     end
   end
@@ -57,6 +60,9 @@ defmodule Deployer.HotUpgrade.Deployex do
 
       {:error, {:otp_mismatch, _versions} = reason} ->
         {:error, reason}
+
+      {:error, :in_progress} = refused ->
+        refused
 
       reason ->
         Logger.warning(
@@ -107,6 +113,18 @@ defmodule Deployer.HotUpgrade.Deployex do
       end
     end
   end
+
+  @doc """
+  The self-upgrade that runs now, or the last one since DeployEx started, nil when none ran.
+  """
+  @spec progress() :: Progress.t() | nil
+  def progress, do: HotUpgradeApp.progress(@deployex_name)
+
+  @doc """
+  Subscribes the caller to the hot upgrade events. Each event names its sname.
+  """
+  @spec subscribe() :: :ok
+  def subscribe, do: HotUpgradeApp.subscribe_events()
 
   @doc """
   Record a version installed by a hot upgrade of DeployEx itself.

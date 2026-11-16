@@ -8,6 +8,7 @@ defmodule Deployer.HotUpgrade.ApplicationTest do
   alias Deployer.HotUpgrade.Application, as: UpgradeApp
   alias Deployer.HotUpgrade.Check
   alias Deployer.HotUpgrade.Execute
+  alias Deployer.HotUpgrade.Progress
   alias Foundation.Catalog
   alias Foundation.Fixture.Catalog, as: FixtureCatalog
 
@@ -1727,6 +1728,10 @@ defmodule Deployer.HotUpgrade.ApplicationTest do
                       "Adding the runtime configuration to the relup"},
                      1_000
 
+      # Made permanent later, from the server's mailbox, and still announced
+      assert_receive {:hot_upgrade_progress, ^node, ^sname, "Making release 0.2.0 permanent"},
+                     1_000
+
       assert_receive {:hot_upgrade_complete, ^node, ^sname, :ok,
                       "Hot upgrade applied successfully, 0.1.0 -> 0.2.0"},
                      1_000
@@ -2843,5 +2848,157 @@ defmodule Deployer.HotUpgrade.ApplicationTest do
       assert File.dir?("#{current_path}/releases/0.0.9")
       assert File.dir?("#{current_path}/lib/#{app_name}-0.0.9")
     end
+  end
+
+  describe "progress/1" do
+    test "is nil for a name with no run" do
+      assert UpgradeApp.progress("never-upgraded") == nil
+    end
+
+    @tag :capture_log
+    test "keeps every step of a self-upgrade and its outcome", %{
+      current_path: current_path,
+      new_path: new_path,
+      from_version: from_version,
+      to_version: to_version
+    } do
+      node = Node.self()
+      stub_self_upgrade_rpc(node, current_path, to_version, {:ok, :any, :any})
+
+      with_mock Node, [:passthrough], connect: fn ^node -> true end do
+        UpgradeApp.subscribe_events()
+        ref = make_ref()
+
+        assert :ok =
+                 UpgradeApp.execute(
+                   self_upgrade(current_path, new_path, from_version, to_version, ref)
+                 )
+
+        assert_receive {:handle_ref_event, ^ref}, 1_000
+      end
+
+      assert %Progress{
+               sname: "deployex",
+               from_version: "0.1.0",
+               to_version: "0.2.0",
+               state: :success,
+               messages: messages,
+               updated_at: %DateTime{}
+             } = UpgradeApp.progress("deployex")
+
+      assert messages == [
+               "Starting upgrade for deployex...",
+               "Unpacking release",
+               "Creating relup file",
+               "Checking release can be installed",
+               "Resolving the runtime configuration",
+               "Adding the runtime configuration to the relup",
+               "Installing release",
+               "Making release 0.2.0 permanent",
+               "Hot upgrade applied successfully, 0.1.0 -> 0.2.0"
+             ]
+    end
+
+    @tag :capture_log
+    test "a failed run keeps the steps it reached and the error, in a table made on the first write",
+         %{
+           current_path: current_path,
+           new_path: new_path,
+           from_version: from_version,
+           to_version: to_version
+         } do
+      node = Node.self()
+      stub_self_upgrade_rpc(node, current_path, to_version, {:error, :bad_relup})
+
+      # A server that a hot upgrade brought to this version has no table, since init/1 did not run
+      :sys.replace_state(UpgradeApp, fn state ->
+        :ets.delete(:deployer_hot_upgrade_progress)
+        state
+      end)
+
+      assert UpgradeApp.progress("deployex") == nil
+
+      with_mock Node, [:passthrough], connect: fn ^node -> true end do
+        UpgradeApp.subscribe_events()
+
+        # Its own app, so the failed run it leaves does not read as the last DeployEx upgrade
+        execute = %{
+          self_upgrade(current_path, new_path, from_version, to_version, make_ref())
+          | sname: "otherapp-a1b2",
+            name: "otherapp"
+        }
+
+        assert {:error, _reason} = UpgradeApp.execute(execute)
+
+        assert_receive {:hot_upgrade_complete, _node, "otherapp-a1b2", :error, _message}, 1_000
+      end
+
+      assert %Progress{sname: "otherapp-a1b2", state: :error, messages: messages} =
+               UpgradeApp.progress("otherapp")
+
+      assert [
+               "Starting upgrade for otherapp-a1b2...",
+               "Unpacking release",
+               "Creating relup file",
+               "Checking release can be installed",
+               "Hot upgrade 0.1.0 -> 0.2.0 failed: " <> _reason
+             ] = messages
+    end
+  end
+
+  defp self_upgrade(current_path, new_path, from_version, to_version, ref) do
+    %Execute{
+      node: Node.self(),
+      sname: "deployex",
+      name: "deployex",
+      language: "elixir",
+      current_path: current_path,
+      new_path: new_path,
+      from_version: from_version,
+      to_version: to_version,
+      make_permanent_async: true,
+      sync_execution: true,
+      after_async_make_permanent: {Deployer.HotUpgrade.TestCallback, :notify, [self(), ref]}
+    }
+  end
+
+  defp stub_self_upgrade_rpc(node, current_path, to_version, check_install_reply) do
+    releases_path = "#{current_path}/releases/#{to_version}"
+    File.mkdir_p!(releases_path)
+    File.cp!("./test/support/files/sys.config", "#{releases_path}/sys.config")
+    write_relup!("#{releases_path}/relup")
+
+    Foundation.RpcMock
+    |> stub(:call, fn
+      ^node, :release_handler, :unpack_release, _params, @expected_timeout ->
+        {:ok, to_version}
+
+      ^node, :release_handler, :which_releases, [], @expected_timeout ->
+        []
+
+      ^node, :release_handler, :remove_release, _params, @expected_timeout ->
+        :ok
+
+      ^node, :code, :root_dir, [], @expected_timeout ->
+        ~c"/tmp/deployex/varlib/service/deployex"
+
+      ^node, :systools, :make_relup, _params, @expected_timeout ->
+        {:ok, :relup, :systools_relup, []}
+
+      ^node, :release_handler, :check_install_release, _params, @expected_timeout ->
+        check_install_reply
+
+      ^node, _module, :load, [cfg, _arg], @expected_timeout ->
+        cfg
+
+      ^node, :persistent_term, :put, _params, @expected_timeout ->
+        :ok
+
+      ^node, :release_handler, :install_release, _params, @expected_timeout ->
+        {:ok, :any, :any}
+
+      ^node, :release_handler, :make_permanent, _params, @expected_timeout ->
+        :ok
+    end)
   end
 end

@@ -1287,6 +1287,36 @@
     max-width: calc(100vw - 32px);
 }
 
+/* A run in progress in the bell, like the DeployEx self-upgrade: a dot on the bell, and its row on top */
+.dx-nrun {
+    display: none;
+    position: absolute;
+    right: 5px;
+    bottom: 5px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--dx-hot-text);
+}
+
+[data-bell]:has(.dx-nitem-run) .dx-nrun {
+    display: block;
+}
+
+[data-bell]:has(.dx-nitem-run) [data-bell-empty] {
+    display: none;
+}
+
+.dx-nitem-run .dx-leds-compact {
+    margin-top: 6px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+    .dx-nrun {
+        animation: dx-pulse 1.4s ease-in-out infinite;
+    }
+}
+
 .dx-nitem {
     display: flex;
     align-items: flex-start;
@@ -1415,10 +1445,38 @@
     flex-direction: column;
 }
 
+/* The DeployEx version, at the bottom of the sidebar */
+.dx-side-foot {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: center;
+    gap: 4px;
+    margin-top: auto;
+    padding: 12px 10px 14px;
+    border-top: 1px solid var(--dx-base-300);
+    color: var(--dx-muted);
+    font-size: 0.75rem;
+}
+
 /* The icon rail, from lg up. root.html.heex sets data-sidebar on <html> */
 @media (min-width: 64rem) {
     [data-sidebar=collapsed] .dx-side {
         width: var(--dx-rail-width);
+    }
+
+    [data-sidebar=collapsed] .dx-side-foot {
+        padding: 10px 4px 12px;
+        font-size: 0.6875rem;
+    }
+
+    [data-sidebar=collapsed] .dx-side-foot-name {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
     }
 
     [data-sidebar=collapsed] .dx-nav span {
@@ -2033,6 +2091,68 @@
     color: var(--dx-success-text);
     background: color-mix(in oklch, var(--dx-success) 12%, var(--dx-base-100));
     border-color: color-mix(in oklch, var(--dx-success) 40%, var(--dx-base-100));
+}
+
+/* Step LEDs: one square per step, with an icon on the done and failed ones */
+.dx-leds {
+    display: flex;
+    gap: 6px;
+}
+
+.dx-led-wrap {
+    display: inline-flex;
+    cursor: default;
+}
+
+.dx-led {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    border: 1.5px solid var(--dx-muted);
+    color: var(--dx-base-100);
+}
+
+.dx-led-ico {
+    width: 12px;
+    height: 12px;
+}
+
+.dx-led-done {
+    border-color: var(--dx-success-text);
+    background: var(--dx-success-text);
+}
+
+.dx-led-failed {
+    border-color: var(--dx-error-text);
+    background: var(--dx-error-text);
+}
+
+.dx-led-current {
+    border-color: var(--dx-hot-text);
+    background: var(--dx-hot-text);
+}
+
+/* The compact row sits next to its text, as in the bell */
+.dx-leds-compact {
+    display: inline-flex;
+    gap: 3px;
+}
+
+.dx-leds-compact .dx-led {
+    width: 8px;
+    height: 8px;
+    border-width: 1px;
+    border-radius: 2px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+    .dx-led-current {
+        animation: dx-pulse 1.4s ease-in-out infinite;
+    }
 }
 
 .dx-seg-group {

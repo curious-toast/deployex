@@ -18,6 +18,8 @@ defmodule Deployer.SelfUpgrade.Worker do
   use GenServer
   require Logger
 
+  alias Deployer.HotUpgrade.Deployex
+  alias Deployer.HotUpgrade.Progress
   alias Deployer.SelfUpgrade.Executor
   alias Deployer.SelfUpgrade.Source
 
@@ -117,6 +119,13 @@ defmodule Deployer.SelfUpgrade.Worker do
   defp maybe_start_upgrade(%{task: task} = state) when not is_nil(task), do: {:in_progress, state}
 
   defp maybe_start_upgrade(state) do
+    # A self-upgrade from the dashboard runs. Its refusal would latch the version as failed
+    if Progress.running?(Deployex.progress()),
+      do: {:in_progress, state},
+      else: start_from_source(state)
+  end
+
+  defp start_from_source(state) do
     case Source.desired_version() do
       {:ok, version} ->
         reconcile_version(version, state)
@@ -165,11 +174,22 @@ defmodule Deployer.SelfUpgrade.Worker do
         %{state | last_failed: nil}
 
       {out, code} when is_integer(code) ->
-        finish_failed(version, {:exit, code}, out, state)
+        if Progress.running?(Deployex.progress()),
+          do: retry_after_run(version, out, state),
+          else: finish_failed(version, {:exit, code}, out, state)
 
       {:error, reason} ->
         finish_failed(version, reason, nil, state)
     end
+  end
+
+  # A run that started after the tick refused this one. The version did not fail, so it is not latched
+  defp retry_after_run(version, out, state) do
+    Logger.warning(
+      "Self-upgrade: another hot upgrade is in progress, the next tick tries #{version} again\n#{out}"
+    )
+
+    state
   end
 
   defp finish_failed(version, reason, out, state) do

@@ -373,8 +373,8 @@ Use the DeployEx web interface to upload a release file:
 
 1. Open the Hot-Upgrade page in DeployEx
 2. Upload the release file (DeployEx automatically validates it)
-3. Click **Apply**
-4. Monitor the progress modal until the hot-upgrade completes successfully
+3. Click **Apply**, then confirm
+4. Follow the steps on the page until the hot upgrade completes. The bell shows the progress on every page
 
 ### Method 3: GitHub Actions Release Download
 
@@ -384,8 +384,8 @@ Use the DeployEx web interface to download a release from GitHub:
 2. Click **GitHub URL**
 3. Enter the artifact URL
 4. Enter your GitHub personal access token and click **Download** (DeployEx automatically validates the release)
-5. Click **Apply**
-6. Monitor the progress modal until the hot-upgrade completes successfully
+5. Click **Apply**, then confirm
+6. Follow the steps on the page until the hot upgrade completes. The bell shows the progress on every page
 
 ### Method 4: Terraform (IaC) self-upgrade
 
@@ -421,9 +421,10 @@ DeployEx stays on the current version and reports the failure. You then upgrade 
 fallback would have to stop and re-lay-down `/opt/deployex`, which the unprivileged `deployex` service user cannot do safely, so it
 is deliberately not offered here.
 
-To roll out a new version: set `deployex_version` in Terraform, run `terraform apply`, then watch the DeployEx logs for the
-self-upgrade result. The AWS instance must enable metadata tags (`metadata_options { instance_metadata_tags = "enabled" }`), which
-the guide modules already set. The hot upgrade runs `deployex rpc` against the running node; DeployEx passes the live distribution
+To roll out a new version: set `deployex_version` in Terraform, run `terraform apply`, then follow the self-upgrade on the
+dashboard, in the bell and on the Hot Upgrade page, or in the DeployEx logs. The AWS instance must enable metadata tags
+(`metadata_options { instance_metadata_tags = "enabled" }`), which the guide modules already set. The hot upgrade runs
+`deployex rpc` against the running node; DeployEx passes the live distribution
 cookie to that call automatically, so you do not need to set `RELEASE_COOKIE` for the worker.
 
 On an instance provisioned before this feature, the on-disk `/home/root/deployex.sh` predates the `--set-version` flag the worker
@@ -480,7 +481,7 @@ Past that point the new code is already loaded, and the message says so instead.
 
 > [!NOTE]
 > The UI applies the upgrade asynchronously, so the log records that it started and the outcome follows on a later line.
-> The progress modal shows the result as it happens.
+> The Hot Upgrade page shows each step as it happens, whatever started the upgrade.
 > The installer script applies it synchronously, so there `Hot upgrade in deployex installed with success` is written once the upgrade has actually finished.
 
 ## Hot-Upgrading Monitored Applications
