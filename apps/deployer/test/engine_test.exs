@@ -3282,7 +3282,7 @@ defmodule Deployer.EngineTest do
               %Engine.Worker{
                 name: "myelixir",
                 pending_pre_commands: nil,
-                readiness: %Foundation.Yaml.Readiness{type: :timeout}
+                readiness: %Foundation.Yaml.Readiness{type: :otp}
               }} = Engine.Worker.code_change("0.10.0", old_state, [])
     end
   end

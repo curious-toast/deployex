@@ -925,11 +925,11 @@ defmodule Sentinel.Config.WatcherTest do
 
   describe "application changes detection" do
     for {label, old_readiness, new_readiness, changed?} <- [
-          {"a changed type", %Yaml.Readiness{}, %Yaml.Readiness{type: :otp}, true},
+          {"a changed type", %Yaml.Readiness{type: :timeout}, %Yaml.Readiness{type: :otp}, true},
           {"an app from a version without readiness, with the default", nil, %Yaml.Readiness{},
            false},
           {"an app from a version without readiness, with another value", nil,
-           %Yaml.Readiness{type: :otp}, true}
+           %Yaml.Readiness{type: :timeout}, true}
         ] do
       test "readiness changes - #{label}" do
         test_pid = self()

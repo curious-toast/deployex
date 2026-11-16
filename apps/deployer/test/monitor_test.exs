@@ -307,7 +307,7 @@ defmodule Deployer.MonitorTest do
                  sname: sname,
                  language: "elixir",
                  ports: ports,
-                 readiness: %Readiness{min_ready_ms: 10}
+                 readiness: %Readiness{type: :timeout, min_ready_ms: 10}
                })
 
       MonitorApp.subscribe_new_deploy()
@@ -430,7 +430,7 @@ defmodule Deployer.MonitorTest do
                  language: "elixir",
                  ports: ports,
                  env: ["RELEASE_COOKIE=app-cookie"],
-                 readiness: %Readiness{min_ready_ms: 10}
+                 readiness: %Readiness{type: :timeout, min_ready_ms: 10}
                })
 
       assert_receive {:start_command, command}, 1_000
@@ -480,7 +480,7 @@ defmodule Deployer.MonitorTest do
                      "TEST_QUOTE=it's",
                      "TEST_EQUALS=k=v"
                    ],
-                   readiness: %Readiness{min_ready_ms: 10}
+                   readiness: %Readiness{type: :timeout, min_ready_ms: 10}
                  })
 
         assert_receive {:start_command, command}, 1_000
@@ -534,7 +534,7 @@ defmodule Deployer.MonitorTest do
                    sname: sname,
                    language: language,
                    ports: context.ports,
-                   readiness: %Readiness{min_ready_ms: 10}
+                   readiness: %Readiness{type: :timeout, min_ready_ms: 10}
                  })
 
         assert_receive {:start_command, command}, 1_000
@@ -592,7 +592,7 @@ defmodule Deployer.MonitorTest do
                  sname: sname,
                  language: language,
                  ports: ports,
-                 readiness: %Readiness{min_ready_ms: 10}
+                 readiness: %Readiness{type: :timeout, min_ready_ms: 10}
                })
 
       assert_receive {:handle_ref_event, ^test_event_ref}, 1_000
@@ -635,7 +635,7 @@ defmodule Deployer.MonitorTest do
                  sname: sname,
                  language: language,
                  ports: ports,
-                 readiness: %Readiness{min_ready_ms: 10}
+                 readiness: %Readiness{type: :timeout, min_ready_ms: 10}
                })
 
       assert_receive {:handle_ref_event, ^test_event_ref}, 1_000
@@ -679,7 +679,7 @@ defmodule Deployer.MonitorTest do
                  sname: sname,
                  language: "elixir",
                  ports: ports,
-                 readiness: %Readiness{min_ready_ms: 10}
+                 readiness: %Readiness{type: :timeout, min_ready_ms: 10}
                })
 
       assert_receive {:handle_ref_event, ^test_event_ref}, 1_000
@@ -723,7 +723,7 @@ defmodule Deployer.MonitorTest do
                           sname: sname,
                           language: language,
                           ports: ports,
-                          readiness: %Readiness{min_ready_ms: 10}
+                          readiness: %Readiness{type: :timeout, min_ready_ms: 10}
                         })
 
                assert_receive {:handle_ref_event, ^test_event_ref}, 1_000
@@ -768,7 +768,7 @@ defmodule Deployer.MonitorTest do
                           sname: sname,
                           language: language,
                           ports: ports,
-                          readiness: %Readiness{min_ready_ms: 10}
+                          readiness: %Readiness{type: :timeout, min_ready_ms: 10}
                         })
 
                assert_receive {:handle_ref_event, ^test_event_ref}, 1_000
@@ -857,7 +857,7 @@ defmodule Deployer.MonitorTest do
                  sname: sname,
                  language: "elixir",
                  ports: ports,
-                 readiness: %Readiness{min_ready_ms: 10},
+                 readiness: %Readiness{type: :timeout, min_ready_ms: 10},
                  retry_delay_pre_commands: 10
                })
 
@@ -904,12 +904,15 @@ defmodule Deployer.MonitorTest do
                  name: name,
                  sname: sname,
                  language: "elixir",
-                 ports: ports
+                 ports: ports,
+                 readiness: %Readiness{type: :timeout}
                })
 
       assert_receive {:handle_ref_event, ^test_event_ref}, 1_000
 
-      send(pid, {:check_running, test_pid_process, sname})
+      send(pid, {:check_running, test_pid_process, "invalid-sname"})
+
+      :timer.sleep(100)
 
       assert %{status: :starting, started_at: %DateTime{}} = MonitorApp.state(sname)
 
@@ -1400,7 +1403,7 @@ defmodule Deployer.MonitorTest do
                  sname: sname,
                  language: "elixir",
                  ports: ports,
-                 readiness: %Readiness{min_ready_ms: 10}
+                 readiness: %Readiness{type: :timeout, min_ready_ms: 10}
                })
 
       assert_receive {:handle_ref_event, ^test_event_ref}, 1_000
@@ -1450,7 +1453,7 @@ defmodule Deployer.MonitorTest do
                  sname: sname,
                  language: "elixir",
                  ports: ports,
-                 readiness: %Readiness{min_ready_ms: 10}
+                 readiness: %Readiness{type: :timeout, min_ready_ms: 10}
                })
 
       assert_receive {:handle_ref_event, ^test_event_ref}, 1_000
@@ -1504,7 +1507,7 @@ defmodule Deployer.MonitorTest do
                  sname: sname,
                  language: "elixir",
                  ports: ports,
-                 readiness: %Readiness{min_ready_ms: 10}
+                 readiness: %Readiness{type: :timeout, min_ready_ms: 10}
                })
 
       assert_receive {:handle_ref_event, ^test_event_ref}, 1_000
@@ -1556,7 +1559,7 @@ defmodule Deployer.MonitorTest do
                           sname: sname,
                           language: "elixir",
                           ports: ports,
-                          readiness: %Readiness{min_ready_ms: 10}
+                          readiness: %Readiness{type: :timeout, min_ready_ms: 10}
                         })
 
                assert {:error, :application_is_not_running} = MonitorApp.restart(sname)
@@ -1601,7 +1604,7 @@ defmodule Deployer.MonitorTest do
                  sname: sname,
                  language: "elixir",
                  ports: ports,
-                 readiness: %Readiness{min_ready_ms: 10}
+                 readiness: %Readiness{type: :timeout, min_ready_ms: 10}
                })
 
       assert_receive {:handle_ref_event, ^test_event_ref}, 1_000
@@ -1688,7 +1691,7 @@ defmodule Deployer.MonitorTest do
                  sname: sname,
                  language: "elixir",
                  ports: ports,
-                 readiness: %Readiness{min_ready_ms: 10},
+                 readiness: %Readiness{type: :timeout, min_ready_ms: 10},
                  retry_delay_pre_commands: 10
                })
 
@@ -1884,7 +1887,7 @@ defmodule Deployer.MonitorTest do
                sname: sname,
                language: "elixir",
                ports: ports,
-               readiness: %Readiness{min_ready_ms: 10}
+               readiness: %Readiness{type: :timeout, min_ready_ms: 10}
              })
 
     assert_receive {:handle_ref_event, ^test_event_ref}, 1_000
@@ -1952,7 +1955,7 @@ defmodule Deployer.MonitorTest do
                sname: sname,
                language: "elixir",
                ports: ports,
-               readiness: %Readiness{min_ready_ms: 10}
+               readiness: %Readiness{type: :timeout, min_ready_ms: 10}
              })
 
     assert_receive {:handle_ref_event, ^ref}, 1_000

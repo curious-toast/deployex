@@ -1033,21 +1033,21 @@ defmodule Foundation.YamlTest do
   end
 
   describe "readiness" do
-    test "defaults to timeout when the section is absent" do
+    test "defaults to otp when the section is absent" do
       with_mocks([
         {System, [:passthrough],
          [get_env: fn "DEPLOYEX_CONFIG_YAML_PATH" -> @yaml_aws_default end]}
       ]) do
         {:ok, %{applications: [app | _rest]}} = Yaml.load()
 
-        assert app.readiness == %Yaml.Readiness{type: :timeout, min_ready_ms: 30_000}
+        assert app.readiness == %Yaml.Readiness{type: :otp, min_ready_ms: 30_000}
       end
     end
 
     test "defaults min_ready_ms and type in a partial section" do
       for {section, expected} <- [
-            {~s(type: "otp"), %Yaml.Readiness{type: :otp, min_ready_ms: 30_000}},
-            {"min_ready_ms: 5000", %Yaml.Readiness{type: :timeout, min_ready_ms: 5_000}}
+            {~s(type: "timeout"), %Yaml.Readiness{type: :timeout, min_ready_ms: 30_000}},
+            {"min_ready_ms: 5000", %Yaml.Readiness{type: :otp, min_ready_ms: 5_000}}
           ] do
         path = readiness_yaml("elixir", section)
 

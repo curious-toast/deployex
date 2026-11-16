@@ -66,7 +66,7 @@ defmodule Foundation.Yaml do
 
     @derive Jason.Encoder
 
-    defstruct type: :timeout, min_ready_ms: :timer.seconds(30)
+    defstruct type: :otp, min_ready_ms: :timer.seconds(30)
 
     @type t :: %__MODULE__{
             type: :timeout | :otp,
@@ -703,8 +703,8 @@ defmodule Foundation.Yaml do
   defp parse_readiness(value),
     do: raise("readiness #{inspect(value)} not supported, expected a section with type")
 
-  defp parse_readiness_type(type) when type in [nil, "timeout"], do: :timeout
-  defp parse_readiness_type("otp"), do: :otp
+  defp parse_readiness_type(type) when type in [nil, "otp"], do: :otp
+  defp parse_readiness_type("timeout"), do: :timeout
 
   defp parse_readiness_type(type),
     do: raise("readiness type #{inspect(type)} not supported, expected timeout or otp")

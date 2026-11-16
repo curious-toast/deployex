@@ -213,7 +213,7 @@ applications:
 
     # Readiness Configuration (optional with defaults)
     readiness:
-      type: "otp"                      # timeout or otp (default: timeout)
+      type: "otp"                      # timeout or otp (default: otp)
       min_ready_ms: 30000              # Min time the application stays up before it counts as ready (default: 30000)
     
     # Port Configuration (optional)
@@ -380,8 +380,8 @@ If the secret is missing when the `auth` section is applied, DeployEx logs a war
 The rollback window closes and the previous version stops when the new instance counts as ready.
 `deploy_rollback_timeout_ms` is the deadline: a version that does not get ready in time is ghosted and the previous version keeps running.
 
-- `timeout` (default) - The OS process stays up for `min_ready_ms`. This does not check the application, so one that stays up but never serves still replaces the previous version.
-- `otp` - The OS process stays up for `min_ready_ms`, and the node reports over OTP distribution that its boot script finished. This requires no change to the application, but it does not check that the application is serving requests or can reach its dependencies. A Gleam application boots from `-eval`, after the boot script, so for Gleam this only checks that the node is up and answering, not that `main` finished its own setup.
+- `timeout` - The OS process stays up for `min_ready_ms`. This does not check the application, so one that stays up but never serves still replaces the previous version.
+- `otp` (default) - The OS process stays up for `min_ready_ms`, and the node reports over OTP distribution that its boot script finished. This requires no change to the application, but it does not check that the application is serving requests or can reach its dependencies. A Gleam application boots from `-eval`, after the boot script, so for Gleam this only checks that the node is up and answering, not that `main` finished its own setup.
 
 #### Application Certificates
 
