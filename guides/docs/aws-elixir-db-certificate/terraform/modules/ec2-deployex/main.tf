@@ -1,25 +1,15 @@
-# The AMI follows the instance type: arm64 for a Graviton type such as t4g, amd64 otherwise
+# The AMI follows the instance type: arm64 for a Graviton type such as t4g, x86_64 otherwise
 data "aws_ec2_instance_type" "ec2_deployex" {
   instance_type = var.instance_type
 }
 
 locals {
-  debian_arch = contains(data.aws_ec2_instance_type.ec2_deployex.supported_architectures, "arm64") ? "arm64" : "amd64"
+  ami_arch = contains(data.aws_ec2_instance_type.ec2_deployex.supported_architectures, "arm64") ? "arm64" : "x86_64"
 }
 
-data "aws_ami" "ec2_deployex_ami_id" {
-  most_recent = true
-  owners      = ["136693071363"] # Debian official
-
-  filter {
-    name   = "name"
-    values = ["debian-13-${local.debian_arch}-*"]
-  }
-
-  filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
-  }
+# The current Amazon Linux 2023 AMI with the default kernel, as AWS publishes it
+data "aws_ssm_parameter" "ec2_deployex_ami_id" {
+  name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-${local.ami_arch}"
 }
 
 data "aws_iam_policy_document" "ec2_deployex_assume_role" {
@@ -193,13 +183,12 @@ data "cloudinit_config" "server_config" {
       myapp_cert_acme_zone = var.myapp_cert_acme_zone
       myapp_cert_arn       = var.certificate_arn
       myapp_cloudflare_api_token = data.aws_secretsmanager_secret_version.myapp_cloudflare_api_token_version.secret_string
-      debian_arch                = local.debian_arch
     })
   }
 }
 
 resource "aws_instance" "ec2_deployex_instance" {
-  ami           = data.aws_ami.ec2_deployex_ami_id.id
+  ami           = data.aws_ssm_parameter.ec2_deployex_ami_id.insecure_value
   instance_type = var.instance_type
   key_name      = var.key_name
 

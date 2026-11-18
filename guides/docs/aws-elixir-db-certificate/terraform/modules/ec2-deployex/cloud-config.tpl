@@ -8,11 +8,12 @@
 packages:
  - unzip
  - yq
- - curl
+ - jq
  - wget
  - vim
  - amazon-ssm-agent
- - postgresql-client
+ - amazon-cloudwatch-agent
+ - postgresql17
  - tmux
  - logrotate
 
@@ -28,6 +29,7 @@ write_files:
       echo ""
       echo "# Installing Certificates env: ${environment} at /usr/local/share/ca-certificates #"
       echo "Retrieving and saving ......"
+      mkdir -p /usr/local/share/ca-certificates
       aws secretsmanager get-secret-value --secret-id ${environment}/${app_name}/deployex/otp-tls-ca | jq -r .SecretString > /usr/local/share/ca-certificates/ca.crt
       aws secretsmanager get-secret-value --secret-id ${environment}/${app_name}/deployex/otp-tls-key | jq -r .SecretString > /usr/local/share/ca-certificates/deployex.key
       aws secretsmanager get-secret-value --secret-id ${environment}/${app_name}/deployex/otp-tls-key | jq -r .SecretString > /usr/local/share/ca-certificates/${app_name}.key
@@ -49,7 +51,7 @@ write_files:
       version: "${deployex_version}"
       otp_version: 28
       otp_tls_certificates: "/usr/local/share/ca-certificates"
-      os_target: "ubuntu-24.04"
+      os_target: "amazon-linux-2023"
       metrics_retention_time_ms: 604800000
       logs_retention_time_ms: 604800000
       monitoring:
@@ -204,13 +206,11 @@ runcmd:
   - wget https://github.com/deployex/deployex/releases/download/${deployex_version}/deployex.sh -P /home/root
   - chmod a+x /home/root/deployex.sh
   - /home/root/deployex.sh --install /home/root/deployex.yaml
-  # Install and configure CloudWatch agent
-  - wget https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/${debian_arch}/latest/amazon-cloudwatch-agent.deb
-  - dpkg -i -E ./amazon-cloudwatch-agent.deb
+  # Configure the CloudWatch agent
   - /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/home/root/cloud-watch-config.json -s
   # Set hostname
-  - hostnamectl set-hostname ${environment}-${app_name}-debian
-  - echo "127.0.0.1 ${environment}-${app_name}-debian" >> /etc/hosts
+  - hostnamectl set-hostname ${environment}-${app_name}-al2023
+  - echo "127.0.0.1 ${environment}-${app_name}-al2023" >> /etc/hosts
   # Enable AWS Systems Manager agent
   - systemctl enable amazon-ssm-agent
   # Download RDS certificate bundle

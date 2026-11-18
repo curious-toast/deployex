@@ -61,7 +61,7 @@ Upon deployment, the following dashboard becomes available, providing easy acces
 - Supports safe tracing for all connected applications.
 - Provides visualization of Host System memory and CPU usage.
 - Provides easy access to the host shell (tmux).
-- Provides script to be used with ubuntu/debian hosts, amd64 or arm64, to install/update and hotupgrade DeployEx.
+- Provides script to be used with ubuntu/debian and Amazon Linux 2023 hosts, amd64 or arm64, to install/update and hotupgrade DeployEx.
 - Provides status information per node:
   - OTP connectivity
   - Version history
@@ -194,7 +194,7 @@ DeployEx offers a comprehensive set of Terraform examples for programmatically d
 
 ### Installation
 
-If you intend to install DeployEx directly on an Ubuntu/Debian server, you can utilize the [deployex script](/devops/installer/deployex.sh) provided in the release package. This script is able to `install`, `update` and `hot-upgrade` DeployEx. However, you have the option to manually compile and install DeployEx on your target system.
+If you intend to install DeployEx directly on an Ubuntu, Debian or Amazon Linux 2023 server, you can utilize the [deployex script](/devops/installer/deployex.sh) provided in the release package. This script is able to `install`, `update` and `hot-upgrade` DeployEx. However, you have the option to manually compile and install DeployEx on your target system.
 
 For a host with no internet route, the script can install and upgrade DeployEx from a private S3 bucket,
 see [AWS hosts with no internet route](guides/docs/aws-air-gapped/README.md).

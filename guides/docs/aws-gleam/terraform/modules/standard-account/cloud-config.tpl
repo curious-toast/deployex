@@ -8,11 +8,14 @@
 packages:
  - certbot
  - yq
+ - jq
  - unzip
+ - wget
+ - tmux
  - nginx
  - logrotate
- - awscli
  - amazon-ssm-agent
+ - amazon-cloudwatch-agent
 
 write_files:
   - path: /home/root/install-otp-certificates.sh
@@ -26,6 +29,7 @@ write_files:
       echo ""
       echo "# Installing Certificates env: ${account_name} at /usr/local/share/ca-certificates #"
       echo "Retrieving and saving ......"
+      mkdir -p /usr/local/share/ca-certificates
       aws secretsmanager get-secret-value --secret-id myappname-${account_name}-otp-tls-ca | jq -r .SecretString > /usr/local/share/ca-certificates/ca.crt
       aws secretsmanager get-secret-value --secret-id myappname-${account_name}-otp-tls-key | jq -r .SecretString > /usr/local/share/ca-certificates/deployex.key
       aws secretsmanager get-secret-value --secret-id myappname-${account_name}-otp-tls-key | jq -r .SecretString > /usr/local/share/ca-certificates/myappname.key
@@ -47,7 +51,7 @@ write_files:
       version: "__DEPLOYEX_VERSION__"
       otp_version: 28
       otp_tls_certificates: "/usr/local/share/ca-certificates"
-      os_target: "ubuntu-24.04"
+      os_target: "amazon-linux-2023"
       metrics_retention_time_ms: 3600000
       logs_retention_time_ms: 3600000
       monitoring:
@@ -171,7 +175,7 @@ write_files:
           notifempty
           copytruncate
       }
-  - path: /etc/nginx/sites-available/default
+  - path: /etc/nginx/conf.d/myappname.conf
     owner: root:root
     permissions: "0644"
     content: |
@@ -187,9 +191,10 @@ write_files:
           server 127.0.0.1:5001 max_fails=5 fail_timeout=60s;
       }
 
+      # The stock nginx.conf has its own "_" server on port 80, so this one has another name
       server {
           listen 80 default_server;
-          server_name _;
+          server_name "";
           return 404;
       }
 
@@ -327,8 +332,8 @@ write_files:
       fi
 runcmd:
   # Set the hostname so the environment is obvious on the box and in logs
-  - hostnamectl set-hostname myappname-${account_name}-debian
-  - echo "127.0.0.1 myappname-${account_name}-debian" >> /etc/hosts
+  - hostnamectl set-hostname myappname-${account_name}-al2023
+  - echo "127.0.0.1 myappname-${account_name}-al2023" >> /etc/hosts
   # Enable AWS Systems Manager agent
   - systemctl enable amazon-ssm-agent
   # RDS server certificate chain, used by the Ecto repo to verify the database
@@ -353,12 +358,10 @@ runcmd:
       { echo "cannot download deployex.sh $DX_VERSION, DeployEx not installed" >&2; exit 1; }
     chmod a+x /home/root/deployex.sh
     /home/root/deployex.sh --install /home/root/deployex.yaml
-  # Install and configure CloudWatch agent
-  - wget https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/${debian_arch}/latest/amazon-cloudwatch-agent.deb
-  - dpkg -i -E ./amazon-cloudwatch-agent.deb
+  # Configure the CloudWatch agent
   - /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/home/root/cloud-watch-config.json -s
   # Build a newer OTP than the distribution ships, required by Gleam
-  - apt install -y build-essential libssl-dev libgtk-3-dev libncurses5-dev libncursesw5-dev libreadline-dev
+  - dnf install -y gcc gcc-c++ make perl openssl-devel gtk3-devel ncurses-devel readline-devel
   - wget https://github.com/erlang/otp/releases/download/OTP-26.1.2/otp_src_26.1.2.tar.gz
   - tar -xzf otp_src_26.1.2.tar.gz && cd otp_src_26.1.2 && ./configure && make && make install
   # Enable Nginx
@@ -366,6 +369,8 @@ runcmd:
   - systemctl restart nginx
   # nginx is serving HTTP at this point, which is all the HTTP-01 challenge needs
   - /home/root/setup-tls.sh
+  # The certbot package installs its renewal timer turned off
+  - systemctl enable --now certbot-renew.timer
   # Reboot to apply all changes
   - sleep 5
   - reboot

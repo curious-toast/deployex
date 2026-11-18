@@ -32,7 +32,9 @@ Ensure you have access to the following secrets for storage in Secrets Manager:
 
 Rename the file [main\_example.tf\_][main] to `main.tf` and verify and configure the variables according to your specific environment. Ensure that you also review and update the [variables file][var]. These variables will be utilized across all Terraform templates to ensure correct setup.
 
-For an arm64 host, set `ec2_instance_type` to a Graviton type such as `t4g.medium`. The AMI, the CloudWatch agent and the DeployEx release follow the instance type. In the same apply, set `deployex_version` to a release that lists `deployex-ubuntu-24.04-arm64-otp-<otp>.tar.gz`. An earlier release installs the amd64 build, which does not start on an arm64 host. Build the monitored app release on arm64 as well.
+The EC2 host runs Amazon Linux 2023. Set `deployex_version` to a release that lists `deployex-amazon-linux-2023-otp-<otp>.tar.gz`, and build the monitored app for Amazon Linux 2023 (see [Release package](#release-package)). The `ubuntu-24.04` release also runs on Ubuntu 24.04 and Debian 13 hosts, but the cloud-init in this module is for Amazon Linux 2023.
+
+For an arm64 host, set `ec2_instance_type` to a Graviton type such as `t4g.medium`. The AMI, the CloudWatch agent and the DeployEx release follow the instance type. Build the monitored app release on arm64 as well.
 
 ## 5. Provisioning the Environment
 
@@ -100,14 +102,14 @@ For initial installations or updates to deployex, follow these steps:
 *__PS__*: make sure you have the pair myappname-web-ec2.pem saved in `~/.ssh/`
 
 ```bash
-ssh -i "myappname-web-ec2.pem" admin@ec2-52-67-178-12.sa-east-1.compute.amazonaws.com
-admin@ip-10-0-1-56:~$
+ssh -i "myappname-web-ec2.pem" ec2-user@ec2-52-67-178-12.sa-east-1.compute.amazonaws.com
+ec2-user@ip-10-0-1-56:~$
 ```
 
 After getting access to EC2, you need to grant root permissions:
 
 ```bash
-admin@ip-10-0-1-56:~$ sudo su
+ec2-user@ip-10-0-1-56:~$ sudo su
 root@ip-10-0-1-56:/home/root$
 ```
 
@@ -154,7 +156,7 @@ vi deployex.yaml
 version: "0.9.1"
 otp_version: 28
 otp_tls_certificates: "/usr/local/share/ca-certificates"
-os_target: "ubuntu-24.04"                                # DeployEx release artifact, for amd64 and arm64. It runs on Debian 13 as well
+os_target: "amazon-linux-2023"                           # DeployEx release asset, for amd64 and arm64. "ubuntu-24.04" for Ubuntu or Debian
 ...
 ```
 
@@ -193,6 +195,8 @@ The JSON file __MUST__ be stored at the following path: `/versions/{monitored_ap
 ### Release package
 
 After DeployEx fetches the release file, it will download the release package for installation. The package should be located at: `/dist/{monitored_app}/{monitored_app}-{version}.tar.gz`
+
+Build the package on Amazon Linux 2023 and for the host CPU. A release built on Ubuntu 24.04 needs a newer glibc and does not start on Amazon Linux 2023. In CI, run the build in an `amazonlinux:2023` container.
 
 
 ### [CI/CD] Upload files to AWS from Github

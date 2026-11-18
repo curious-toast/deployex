@@ -1,26 +1,15 @@
-# The AMI follows the instance type: arm64 for a Graviton type such as t4g, amd64 otherwise
+# The AMI follows the instance type: arm64 for a Graviton type such as t4g, x86_64 otherwise
 data "aws_ec2_instance_type" "deployex" {
   instance_type = var.ec2_instance_type
 }
 
 locals {
-  debian_arch = contains(data.aws_ec2_instance_type.deployex.supported_architectures, "arm64") ? "arm64" : "amd64"
+  ami_arch = contains(data.aws_ec2_instance_type.deployex.supported_architectures, "arm64") ? "arm64" : "x86_64"
 }
 
-data "aws_ami" "debian" {
-  most_recent = true
-
-  filter {
-    name   = "name"
-    values = ["debian-13-${local.debian_arch}-*"]
-  }
-
-  filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
-  }
-
-  owners = ["136693071363"] # Debian official
+# The current Amazon Linux 2023 AMI with the default kernel, as AWS publishes it
+data "aws_ssm_parameter" "al2023" {
+  name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-${local.ami_arch}"
 }
 
 resource "aws_security_group" "ec2_security" {
@@ -116,13 +105,12 @@ data "cloudinit_config" "server_config" {
       account_name = "${var.account_name}"
       aws_region = "${var.aws_region}"
       replicas = "${var.replicas}"
-      debian_arch = local.debian_arch
     })
   }
 }
 
 resource "aws_instance" "ec2_myappname_instance" {
-  ami                         = data.aws_ami.debian.id
+  ami                         = data.aws_ssm_parameter.al2023.insecure_value
   instance_type               = "${var.ec2_instance_type}"
   key_name                    = "${var.aws_key_name}"
   vpc_security_group_ids      = [aws_security_group.ec2_security.id]

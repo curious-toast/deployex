@@ -56,7 +56,7 @@ google_credentials: "/home/ubuntu/gcp-config.json"       # Google credentials (o
 # System Configuration
 version: "0.10.0"                                        # DeployEx version
 otp_version: 28                                          # OTP version (must match monitored apps)
-os_target: "ubuntu-24.04"                                # Target OS server. The installer picks the amd64 or arm64 build
+os_target: "ubuntu-24.04"                                # Target OS: ubuntu-24.04 (also Debian 13) or amazon-linux-2023. The installer picks the amd64 or arm64 build
 enable_release_check: true                               # Hourly GitHub check for a newer DeployEx (optional, default: true)
 
 # Path Configuration (optional with defaults)
@@ -440,7 +440,7 @@ These fields require a **full DeployEx restart**:
 - `version` - DeployEx version
 - `otp_version` - OTP version
 - `otp_tls_certificates` - TLS certificate path
-- `os_target` - Target operating system
+- `os_target` - Target operating system of the DeployEx release: `ubuntu-24.04` (also Debian 13) or `amazon-linux-2023`
 - `enable_release_check` - GitHub check for a newer DeployEx release
 
 #### Installation Paths

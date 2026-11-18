@@ -26,7 +26,7 @@ Put each version under its own prefix, with the files of the GitHub release that
 ```
 s3://my-deployex-releases/deployex/0.10.1/checksum.txt
 s3://my-deployex-releases/deployex/0.10.1/deployex.sh
-s3://my-deployex-releases/deployex/0.10.1/deployex-ubuntu-24.04-otp-28.tar.gz
+s3://my-deployex-releases/deployex/0.10.1/deployex-amazon-linux-2023-otp-28.tar.gz
 ```
 
 The tarball name is `deployex-<os_target>-otp-<otp_version>.tar.gz`, from the DeployEx YAML. An arm64 host takes
@@ -40,7 +40,7 @@ set -euo pipefail
 VERSION=0.10.1
 mkdir -p "release/${VERSION}" && cd "release/${VERSION}"
 gh release download "${VERSION}" -R deployex/deployex \
-  -p checksum.txt -p deployex.sh -p "deployex-ubuntu-24.04*-otp-28.tar.gz"
+  -p checksum.txt -p deployex.sh -p "deployex-amazon-linux-2023*-otp-28.tar.gz"
 sha256sum --check --ignore-missing checksum.txt
 # Scan the files here, and stop if the scan fails.
 aws s3 cp . "s3://my-deployex-releases/deployex/${VERSION}/" --recursive
@@ -92,10 +92,10 @@ the next restart.
 
 ## 5. Host image
 
-`apt` cannot reach a mirror, and the downloads in the `runcmd` of the other AWS guides fail. Build the host image with:
+The downloads in the `runcmd` of the other AWS guides fail. Build the host image with:
 
-- the packages in the cloud-init `packages` list, including the AWS CLI and `yq`
-- the CloudWatch agent, which the other guides download from `s3.amazonaws.com`
+- the packages in the cloud-init `packages` list, including `yq` and the CloudWatch agent. The Amazon Linux 2023 AMI has the
+  AWS CLI
 - the RDS CA bundle, if the monitored app uses it, which the other guides download from `truststore.pki.rds.amazonaws.com`
 
 Then remove the `packages` list and these downloads from cloud-init. A download with no route can wait many minutes before it
@@ -106,7 +106,7 @@ instead, and change two servers in the nginx config of the other guides:
 
 - The port 80 server for the host names redirects every request to HTTPS, which loops behind a load balancer. Replace it
   with one port 80 server per host name, which proxies to the monitored app or to DeployEx, as their port 443 servers do.
-- The port 80 default server (`server_name _`) answers 404. The load balancer health check uses the instance IP as the host
+- The port 80 default server (`default_server`) answers 404. The load balancer health check uses the instance IP as the host
   name, so it reaches this server. Make it proxy to DeployEx, and set the health check path to `/health`, which answers 200.
 
 ## 6. Install the first version from the bucket
