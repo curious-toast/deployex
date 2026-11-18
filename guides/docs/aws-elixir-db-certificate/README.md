@@ -132,6 +132,7 @@ After getting access to EC2, you need to grant root permissions:
 
 ```bash
 ec2-user@ip-10-0-1-56:~$ sudo su
+root@ip-10-0-1-56:/home/ec2-user$ cd /home/root
 root@ip-10-0-1-56:/home/root$
 ```
 
@@ -152,7 +153,7 @@ ca.crt  myappname.crt myappname.key deployex.crt  deployex.key
 If you are updating DeployEx, you may need to update the `deployex.sh` script. This step is not necessary during the initial installation, as the script is already installed by default. To update the script, use the following commands:
 
 ```bash
-version=0.3.0
+version=0.10.1
 rm deployex.sh
 wget https://github.com/deployex/deployex/releases/download/${version}/deployex.sh -P /home/root
 chmod a+x deployex.sh
@@ -175,7 +176,7 @@ If you need to update Deployex, follow these steps to ensure that the configurat
 ```bash
 vi deployex.yaml
 ...
-version: "0.9.1"
+version: "0.10.1"
 otp_version: 28
 otp_tls_certificates: "/usr/local/share/ca-certificates"
 os_target: "amazon-linux-2023"
@@ -218,7 +219,7 @@ The JSON file __MUST__ be stored at the following path: `/versions/{monitored_ap
 
 After DeployEx fetches the release file, it will download the release package for installation. The package should be located at: `/dist/{monitored_app}/{monitored_app}-{version}.tar.gz`
 
-Build the package for AL2023 and for the host CPU. A release built on Ubuntu 24.04 needs a newer glibc and does not start on AL2023. In CI, run the build in an `amazonlinux:2023.0.20230315.0` container, the first AL2023 release. A build on a newer release can need a newer OpenSSL than a host on an older release has. [setup-beam.sh](https://github.com/deployex/deployex/blob/main/devops/releases/setup-beam.sh) installs the Erlang and Elixir versions of a `.tool-versions` file there. Its header lists the build tools to install first.
+Build the package for AL2023 and for the host CPU. A release built on Ubuntu 24.04 needs a newer glibc and does not start on AL2023. In CI, run the build in an `amazonlinux:2023.0.20230315.0` container. This is the first AL2023 version. A build on a newer AL2023 version can need a newer OpenSSL than a host on an older version has. [setup-beam.sh](https://github.com/deployex/deployex/blob/main/devops/releases/setup-beam.sh) installs the Erlang and Elixir versions of a `.tool-versions` file there. Its header lists the build tools to install first.
 
 
 ### [CI/CD] Upload files to AWS from Github
