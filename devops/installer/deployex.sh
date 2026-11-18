@@ -222,6 +222,18 @@ DEPLOYEX_SYSTEMD_FILE="
     echo "#    Deployex installed with success       #"
 }
 
+# Remove the deployex user and group, if they exist. userdel and groupdel are on every
+# supported OS, deluser and delgroup are not on Amazon Linux.
+remove_deployex_user() {
+    if id "deployex" &>/dev/null; then
+        userdel --remove deployex 2>/dev/null || true
+    fi
+
+    if getent group deployex &>/dev/null; then
+        groupdel deployex 2>/dev/null || true
+    fi
+}
+
 # Download one release file. An s3:// URL is read with the AWS CLI, which signs the
 # request with the instance role, so the bucket can stay private.
 fetch_release_file() {
@@ -509,6 +521,11 @@ if [ ! -f $config_file ]; then
     exit 1
 fi
 
+if ! command -v yq >/dev/null 2>&1; then
+    echo "Error: yq is required to read ${config_file}. Install it first, for example: dnf install yq, or apt-get install yq"
+    exit 1
+fi
+
 version=$(yq '.version' $config_file | tr -d '"')
 otp_version=$(yq '.otp_version' $config_file | tr -d '"')
 otp_tls_certificates=$(yq '.otp_tls_certificates' $config_file | tr -d '"')
@@ -588,15 +605,7 @@ elif [ $operation == update ]; then
     update_deployex $os_target $otp_version $base_release
 elif [ $operation == uninstall ]; then
     remove_deployex
-    # Remove user and group (only if they exist)
-    if id "deployex" &>/dev/null; then
-        deluser --remove-home deployex 2>/dev/null || true
-    fi
-    
-    if getent group deployex &>/dev/null; then
-        delgroup deployex 2>/dev/null || true
-    fi
-
+    remove_deployex_user
     echo "# Deployex uninstalled with success        #"
 elif [ $operation == hot-upgrade ]; then
     if [[ -n $release_path ]]; then

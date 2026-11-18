@@ -83,7 +83,7 @@ defmodule Deployer.Installer.DeployexShTest do
   describe "release_file_name" do
     @run_name ~S"""
     eval "$(sed -n '/^release_file_name() {$/,/^}$/p' "${INSTALLER}")"
-    release_file_name ubuntu-24.04 28 2>"${ERR}"
+    release_file_name "${OS_TARGET}" 28 2>"${ERR}"
     """
 
     test "an x86_64 host gets the asset name without an architecture", context do
@@ -94,6 +94,14 @@ defmodule Deployer.Installer.DeployexShTest do
     test "an aarch64 host gets the arm64 asset", context do
       assert release_file_name(context, "aarch64") ==
                {"deployex-ubuntu-24.04-arm64-otp-28.tar.gz\n", 0, ""}
+    end
+
+    test "the amazon-linux-2023 os_target gets the Amazon Linux assets", context do
+      assert release_file_name(context, "x86_64", "amazon-linux-2023") ==
+               {"deployex-amazon-linux-2023-otp-28.tar.gz\n", 0, ""}
+
+      assert release_file_name(context, "aarch64", "amazon-linux-2023") ==
+               {"deployex-amazon-linux-2023-arm64-otp-28.tar.gz\n", 0, ""}
     end
 
     test "another architecture fails with the reason", context do
@@ -107,7 +115,57 @@ defmodule Deployer.Installer.DeployexShTest do
     end
   end
 
-  defp release_file_name(%{tmp_dir: tmp_dir, bin: bin}, arch) do
+  describe "remove_deployex_user" do
+    @run_remove_user ~S"""
+    eval "$(sed -n '/^remove_deployex_user() {$/,/^}$/p' "${INSTALLER}")"
+    remove_deployex_user
+    """
+
+    setup %{bin: bin} do
+      for name <- ["id", "getent", "userdel", "groupdel", "deluser", "delgroup"] do
+        path = Path.join(bin, name)
+        File.write!(path, @fake_cli)
+        File.chmod!(path, 0o755)
+      end
+
+      :ok
+    end
+
+    test "removes the user and the group with userdel and groupdel", context do
+      assert remove_deployex_user(context, []) == 0
+
+      assert recorded_args(context.tmp_dir, "userdel") == ["--remove", "deployex"]
+      assert recorded_args(context.tmp_dir, "groupdel") == ["deployex"]
+      assert recorded_args(context.tmp_dir, "deluser") == nil
+      assert recorded_args(context.tmp_dir, "delgroup") == nil
+    end
+
+    test "removes nothing when the user and the group do not exist", context do
+      assert remove_deployex_user(context, [{"FAKE_FAIL", "1"}]) == 0
+
+      assert recorded_args(context.tmp_dir, "id") == ["deployex"]
+      assert recorded_args(context.tmp_dir, "userdel") == nil
+      assert recorded_args(context.tmp_dir, "groupdel") == nil
+    end
+  end
+
+  test "stops with the reason when yq is not installed", %{tmp_dir: tmp_dir} do
+    config = Path.join(tmp_dir, "deployex.yaml")
+    File.write!(config, "version: \"0.10.1\"\n")
+
+    # An empty PATH has no yq. The installer reaches the check with shell builtins only
+    {output, status} =
+      System.cmd(System.find_executable("bash"), [@installer, "--update", config],
+        env: [{"PATH", Path.join(tmp_dir, "empty")}]
+      )
+
+    assert status == 1
+
+    assert output ==
+             "Error: yq is required to read #{config}. Install it first, for example: dnf install yq, or apt-get install yq\n"
+  end
+
+  defp release_file_name(%{tmp_dir: tmp_dir, bin: bin}, arch, os_target \\ "ubuntu-24.04") do
     err = Path.join(tmp_dir, "stderr")
     uname = Path.join(bin, "uname")
     File.write!(uname, "#!/bin/bash\necho #{arch}\n")
@@ -116,11 +174,28 @@ defmodule Deployer.Installer.DeployexShTest do
     env = [
       {"PATH", bin <> ":" <> System.get_env("PATH")},
       {"INSTALLER", @installer},
+      {"OS_TARGET", os_target},
       {"ERR", err}
     ]
 
     {output, status} = System.cmd("bash", ["-c", @run_name], env: env)
     {output, status, File.read!(err)}
+  end
+
+  defp remove_deployex_user(%{tmp_dir: tmp_dir, bin: bin}, env) do
+    env =
+      Map.merge(
+        %{
+          "PATH" => bin <> ":" <> System.get_env("PATH"),
+          "INSTALLER" => @installer,
+          "FAKE_ARGS_DIR" => tmp_dir,
+          "FAKE_FAIL" => nil
+        },
+        Map.new(env)
+      )
+
+    {_output, status} = System.cmd("bash", ["-c", @run_remove_user], env: Enum.to_list(env))
+    status
   end
 
   defp fetch_release_file(%{tmp_dir: tmp_dir, bin: bin, dest: dest}, url, env) do
