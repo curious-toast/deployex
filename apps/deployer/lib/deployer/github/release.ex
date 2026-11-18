@@ -47,7 +47,7 @@ defmodule Deployer.Github.Release do
 
       {:ok, update_github_info()}
     else
-      Logger.info("GitHub release check is off")
+      Logger.info("GitHub release check is off (test release B)")
       {:ok, %__MODULE__{}}
     end
   end
