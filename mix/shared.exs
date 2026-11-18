@@ -1,5 +1,5 @@
 defmodule Mix.Shared do
-  def version, do: "0.10.0"
+  def version, do: "0.10.26"
 
   # observer_web 0.2.10 requires ~> 1.19 and assent 0.4.0 requires ~> 1.18.
   def elixir, do: "~> 1.19"
