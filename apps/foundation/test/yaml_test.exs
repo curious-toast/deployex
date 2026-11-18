@@ -1063,9 +1063,19 @@ defmodule Foundation.YamlTest do
 
     test "raises on values it does not support" do
       for {language, section, message} <- [
-            {"elixir", ~s(type: "http"), ~s(readiness type "http" not supported)},
+            {"elixir", ~s(type: "grpc"), ~s(readiness type "grpc" not supported)},
             {"elixir", "min_ready_ms: -1", "readiness min_ready_ms -1 not supported"},
-            {"elixir", ~s(min_ready_ms: "fast"), ~s(min_ready_ms "fast" not supported)}
+            {"elixir", ~s(min_ready_ms: "fast"), ~s(min_ready_ms "fast" not supported)},
+            {"elixir",
+             ~s(type: "http"\n      scheme: "ftp"\n      port_key: "PORT"\n      path: "/ready"),
+             ~s(readiness scheme "ftp" not supported)},
+            {"elixir", ~s(type: "http"\n      path: "/ready"),
+             "readiness http requires port_key"},
+            {"elixir", ~s(type: "http"\n      port_key: "PORT"), "readiness http requires path"},
+            {"elixir", ~s(type: "http"\n      port_key: "PORT"\n      path: "ready"),
+             ~s(readiness http requires path starting with /, got "ready")},
+            {"elixir", ~s(type: "http"\n      port_key: "NOT_A_PORT"\n      path: "/ready"),
+             ~s(readiness port_key "NOT_A_PORT" is not a key in replica_ports)}
           ] do
         path = readiness_yaml(language, section)
 
@@ -1074,6 +1084,41 @@ defmodule Foundation.YamlTest do
         ]) do
           assert_raise RuntimeError, ~r/#{Regex.escape(message)}/, fn -> Yaml.load() end
         end
+      end
+    end
+
+    test "parses a full http section" do
+      path =
+        readiness_yaml(
+          "elixir",
+          ~s(type: "http"\n      scheme: "https"\n      port_key: "PORT"\n      path: "/ready"\n      min_ready_ms: 5000)
+        )
+
+      with_mocks([
+        {System, [:passthrough], [get_env: fn "DEPLOYEX_CONFIG_YAML_PATH" -> path end]}
+      ]) do
+        {:ok, %{applications: [app | _rest]}} = Yaml.load()
+
+        assert app.readiness == %Yaml.Readiness{
+                 type: :http,
+                 scheme: "https",
+                 port_key: "PORT",
+                 path: "/ready",
+                 min_ready_ms: 5_000
+               }
+      end
+    end
+
+    test "http defaults scheme to http" do
+      path =
+        readiness_yaml("elixir", ~s(type: "http"\n      port_key: "PORT"\n      path: "/ready"))
+
+      with_mocks([
+        {System, [:passthrough], [get_env: fn "DEPLOYEX_CONFIG_YAML_PATH" -> path end]}
+      ]) do
+        {:ok, %{applications: [app | _rest]}} = Yaml.load()
+
+        assert app.readiness.scheme == "http"
       end
     end
 

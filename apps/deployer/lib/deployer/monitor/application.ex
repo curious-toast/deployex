@@ -198,7 +198,7 @@ defmodule Deployer.Monitor.Application do
       when pid == state.current_pid and sname == state.sname do
     %{node: node} = Catalog.node_info(sname)
 
-    if Monitor.Probe.ready?(readiness(state), node, state.language) do
+    if Monitor.Probe.ready?(readiness(state), node, state.language, state.ports) do
       Logger.info(" # Application sname: #{state.sname} is running")
 
       Engine.notify_application_running(sname)
