@@ -32,7 +32,9 @@ Ensure you have access to the following secrets for storage in Secrets Manager:
 
 Check the file [main.tf][main] and configure the [variables][var] according to your specific environment. These variables will be utilized across all Terraform templates to ensure correct setup.
 
-The EC2 host runs Amazon Linux 2023. Set `deployex_version` to a release that lists `deployex-amazon-linux-2023-otp-<otp>.tar.gz`, and build the monitored app for Amazon Linux 2023 (see [Release package](#release-package)). The `ubuntu-24.04` release also runs on Ubuntu 24.04 and Debian 13 hosts, but the cloud-init in this module is for Amazon Linux 2023.
+The EC2 host runs Amazon Linux 2023 (AL2023). Set `deployex_version` to a release that lists `deployex-amazon-linux-2023-otp-<otp>.tar.gz`, and build the monitored app for AL2023 (see [Release package](#release-package)). The `ubuntu-24.04` asset is for Ubuntu 24.04 and Debian 13 hosts. The cloud-init in this module is for AL2023.
+
+On a deployment made from an earlier version of this guide, the next apply replaces the instance. Before that apply, set `deployex_version` as above and publish a monitored app release built for AL2023.
 
 For an arm64 host, set `instance_type` to a Graviton type such as `t4g.medium`. The AMI, the CloudWatch agent and the DeployEx release follow the instance type. Build the monitored app release on arm64 as well.
 
@@ -216,7 +218,7 @@ The JSON file __MUST__ be stored at the following path: `/versions/{monitored_ap
 
 After DeployEx fetches the release file, it will download the release package for installation. The package should be located at: `/dist/{monitored_app}/{monitored_app}-{version}.tar.gz`
 
-Build the package on Amazon Linux 2023 and for the host CPU. A release built on Ubuntu 24.04 needs a newer glibc and does not start on Amazon Linux 2023. In CI, run the build in an `amazonlinux:2023` container. [setup-beam.sh](https://github.com/deployex/deployex/blob/main/devops/releases/setup-beam.sh) installs the Erlang and Elixir versions of a `.tool-versions` file there.
+Build the package for AL2023 and for the host CPU. A release built on Ubuntu 24.04 needs a newer glibc and does not start on AL2023. In CI, run the build in an `amazonlinux:2023.0.20230315.0` container, the first AL2023 release. A build on a newer release can need a newer OpenSSL than a host on an older release has. [setup-beam.sh](https://github.com/deployex/deployex/blob/main/devops/releases/setup-beam.sh) installs the Erlang and Elixir versions of a `.tool-versions` file there. Its header lists the build tools to install first.
 
 
 ### [CI/CD] Upload files to AWS from Github

@@ -225,9 +225,8 @@ write_files:
       # installer plugin, which does not run here because the certificate is obtained with
       # certonly --webroot, so it does not exist on the box. These are the same values.
       #
-      # They sit inside the server blocks rather than at http level, because the stock
-      # nginx.conf already sets ssl_protocols and ssl_prefer_server_ciphers there and nginx
-      # rejects the duplicates.
+      # They sit inside the server blocks rather than at http level. nginx rejects a
+      # duplicate, and some stock nginx.conf files set ssl_protocols there.
       server {
           listen 443 ssl;
           server_name  ${deployex_hostname};

@@ -147,8 +147,8 @@ variable "bastion_key_name" {
 }
 
 variable "deployex_version" {
-  description = "The default deployex version to install"
+  description = "The default deployex version to install, a release with the amazon-linux-2023 asset"
   type        = string
   nullable    = false
-  default     = "0.9.1"
+  default     = "0.10.1"
 }
