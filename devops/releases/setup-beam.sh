@@ -7,6 +7,9 @@
 #
 # Usage: setup-beam.sh [tool_versions_file] [prefix]
 #
+# On Amazon Linux 2023, install the build tools first:
+#   dnf install -y git tar gzip unzip findutils gcc gcc-c++ make perl ncurses-devel openssl-devel libcap-devel
+#
 set -euo pipefail
 
 TOOL_VERSIONS=${1:-.tool-versions}
@@ -29,7 +32,7 @@ trap 'rm -rf "${work}"' EXIT
 cd "${work}"
 
 echo "# Building Erlang ${erlang} from source"
-curl -fsSL --retry 3 -O "${otp_url}/otp_src_${erlang}.tar.gz" -O "${otp_url}/SHA256.txt"
+curl -fsSL --retry 3 --connect-timeout 30 --max-time 900 -O "${otp_url}/otp_src_${erlang}.tar.gz" -O "${otp_url}/SHA256.txt"
 grep " otp_src_${erlang}.tar.gz$" SHA256.txt | sha256sum -c -
 tar -xzf "otp_src_${erlang}.tar.gz"
 (
@@ -40,7 +43,7 @@ tar -xzf "otp_src_${erlang}.tar.gz"
 )
 
 echo "# Installing Elixir ${elixir_version} for OTP ${elixir_otp}"
-curl -fsSL --retry 3 -O "${elixir_url}/elixir-otp-${elixir_otp}.zip" -O "${elixir_url}/elixir-otp-${elixir_otp}.zip.sha256sum"
+curl -fsSL --retry 3 --connect-timeout 30 --max-time 900 -O "${elixir_url}/elixir-otp-${elixir_otp}.zip" -O "${elixir_url}/elixir-otp-${elixir_otp}.zip.sha256sum"
 sha256sum -c "elixir-otp-${elixir_otp}.zip.sha256sum"
 rm -rf "${PREFIX}/elixir"
 unzip -q "elixir-otp-${elixir_otp}.zip" -d "${PREFIX}/elixir"
