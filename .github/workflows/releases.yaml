@@ -13,6 +13,9 @@ jobs:
   build:
     if: github.event.base_ref == 'refs/heads/main'
     runs-on: ${{ matrix.runner }}
+    # The Amazon Linux 2023 builds run in its container, for its older glibc. The Ubuntu
+    # builds have no container and run on the runner.
+    container: ${{ matrix.container }}
     permissions:
       contents: write
     strategy:
@@ -20,6 +23,7 @@ jobs:
       matrix:
         otp: [28, 29]
         arch: [amd64, arm64]
+        os: [ubuntu-24.04, amazon-linux-2023]
         # An amd64 asset has no architecture in its name, so existing installs keep working.
         include:
           - arch: amd64
@@ -28,9 +32,21 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
             suffix: "-arm64"
+          - os: amazon-linux-2023
+            container: amazonlinux:2023
     env:
-      ARTIFACT_NAME: deployex-ubuntu-24.04${{ matrix.suffix }}-otp-${{ matrix.otp }}.tar.gz
+      ARTIFACT_NAME: deployex-${{ matrix.os }}${{ matrix.suffix }}-otp-${{ matrix.otp }}.tar.gz
     steps:
+      - name: Install the build tools [Amazon Linux 2023]
+        if: matrix.os == 'amazon-linux-2023'
+        run: |
+          dnf install -y --setopt=install_weak_deps=False git tar gzip unzip findutils \
+            gcc gcc-c++ make perl ncurses-devel openssl-devel libcap-devel
+          # The checkout belongs to the runner user, and git refuses a repository that another user owns
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          # The container has no locale set, and Elixir needs UTF-8
+          echo "LANG=C.UTF-8" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v7
         with:
           # Full history + tags so we can build the previous release and let
@@ -38,16 +54,23 @@ jobs:
           fetch-depth: 0
 
       - name: Install libcap-dev [recommended by erlexec]
+        if: matrix.os == 'ubuntu-24.04'
         run: sudo apt-get install libcap-dev -y
 
       - name: Copy .tool-versions
         run: cp devops/releases/otp-${{ matrix.otp }}/.tool-versions .
 
       - name: Setup BEAM
+        if: matrix.os == 'ubuntu-24.04'
         uses: erlef/setup-beam@v1
         with:
           version-file: .tool-versions
           version-type: strict
+
+      # setup-beam has no prebuilt Erlang for Amazon Linux, so Erlang builds from source
+      - name: Setup BEAM [Amazon Linux 2023]
+        if: matrix.os == 'amazon-linux-2023'
+        run: devops/releases/setup-beam.sh .tool-versions
 
       # Mirror hot_upgrade.yaml: build the previous release, then build this tag
       # with --force in the same sequence, so Jellyfish sees the previous app
